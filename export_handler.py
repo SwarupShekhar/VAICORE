@@ -52,6 +52,7 @@ def export_and_deliver(
     label_id: str = None,
     task_id: int = None,
     force_delivery: bool = False,
+    internal_export: bool = False,
 ) -> Dict[str, Any]:
     """
     Export completed annotations from Label Studio and deliver to client via Azure Blob.
@@ -232,15 +233,21 @@ def export_and_deliver(
         if is_image_project:
             for i, seg in enumerate(segments):
                 seg["Item #"] = i + 1
-                final_segments.append({
+                row_data = {
                     "Item #": seg["Item #"],
                     "Category": seg["Category"],
                     "Geometry Type": seg["Geometry Type"],
                     "Points Count": seg["Points Count"],
-                    "Annotator": seg["Annotator"],
                     "Image File": seg["Image File"]
-                })
-            columns = ["Item #", "Category", "Geometry Type", "Points Count", "Annotator", "Image File"]
+                }
+                if internal_export:
+                    row_data["Annotator"] = seg["Annotator"]
+                final_segments.append(row_data)
+
+            if internal_export:
+                columns = ["Item #", "Category", "Geometry Type", "Points Count", "Annotator", "Image File"]
+            else:
+                columns = ["Item #", "Category", "Geometry Type", "Points Count", "Image File"]
             
             # Summary Configuration
             category_counts = {}
@@ -258,7 +265,9 @@ def export_and_deliver(
             for cat, count in sorted(category_counts.items()):
                 summary_values_list.append([cat, count])
             summary_values_list.append(["Total Items", len(segments)])
-            summary_values_list.append(["Annotated By", ", ".join(sorted(list(annotators))) or "Vaidik AI"])
+            
+            annotators_str = ", ".join(sorted(list(annotators))) or "Vaidik AI" if internal_export else "Vaidik AI"
+            summary_values_list.append(["Annotated By", annotators_str])
             summary_values_list.append(["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
             
         else:
@@ -292,7 +301,7 @@ def export_and_deliver(
                 len(segments),
                 round(total_duration_secs / 60, 2),
                 ", ".join(unique_speakers),
-                ", ".join(sorted(list(annotators))) or "Vaidik AI",
+                ", ".join(sorted(list(annotators))) or "Vaidik AI" if internal_export else "Vaidik AI",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ]]
 
