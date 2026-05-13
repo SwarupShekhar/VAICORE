@@ -34,10 +34,10 @@ jobs:
             else
               echo "📦 Pulling latest code..."
               cd "$DEPLOY_DIR"
-              # Untrack runtime-generated data files so they never block a pull
+              # Only remove specific known transient files that block merge — NEVER wipe the entire directory
               git rm -r --cached labelstudio-data/ 2>/dev/null || true
-              # Remove untracked runtime files (untracked files block merge, checkout does NOT remove them)
-              git clean -fd -- labelstudio-data/ 2>/dev/null || true
+              # Remove only the specific tracked files that git reports as conflicts (NOT the whole directory)
+              git status --short | grep '^?' | awk '{print $2}' | grep '^labelstudio-data/' | xargs -r rm -f || true
               git pull origin main
             fi
 
@@ -58,13 +58,19 @@ jobs:
             fi
             echo "🐳 Using: $DC"
 
-            echo "🛑 Stopping old containers..."
-            $DC down || true
+            # ── Persistent data directory (outside the git repo — survives all git operations) ──
+            export LS_DATA_DIR="/opt/vaidikai-data/labelstudio"
+            mkdir -p "$LS_DATA_DIR" "$LS_DATA_DIR/sam_models"
+            echo "📂 Label Studio data dir: $LS_DATA_DIR"
+
+            echo "🛑 Stopping and rebuilding portal containers (preserving LS data)..."
+            $DC stop vaidikai-portal sam-ml-backend || true
+            $DC rm -f vaidikai-portal sam-ml-backend || true
 
             echo "🔨 Building new images..."
-            $DC build --no-cache
+            $DC build --no-cache vaidikai-portal sam-ml-backend
 
-            echo "🚀 Starting services..."
+            echo "🚀 Starting all services..."
             $DC up -d
 
             echo "⏳ Waiting for services to become ready..."
