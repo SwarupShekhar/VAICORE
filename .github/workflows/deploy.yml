@@ -34,6 +34,10 @@ jobs:
             else
               echo "📦 Pulling latest code..."
               cd "$DEPLOY_DIR"
+              # Untrack runtime-generated data files so they never block a pull
+              git rm -r --cached labelstudio-data/ 2>/dev/null || true
+              # Discard any local modifications to runtime files
+              git checkout -- labelstudio-data/ 2>/dev/null || true
               git pull origin main
             fi
 
