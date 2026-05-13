@@ -24,7 +24,7 @@ jobs:
           ssh -i ~/.ssh/vultr -o StrictHostKeyChecking=no deploy@${{ secrets.VULTR_IP }} << 'EOF'
             set -e
 
-            REPO_URL="https://github.com/SwarupShekhar/vaidikai-portal.git"
+            REPO_URL="https://github.com/SwarupShekhar/VAICORE.git"
             DEPLOY_DIR="/opt/vaidikai-portal/vaidikai-portal"
 
             # ── Clone on first run, pull on subsequent runs ──────────────
