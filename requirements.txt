@@ -12,3 +12,5 @@ openpyxl
 openai
 aiohttp
 requests
+opencv-python-headless
+numpy

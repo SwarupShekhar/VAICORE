@@ -143,6 +143,135 @@
         .login-error { color: #ff6b6b; font-size: 0.85rem; margin-top: 8px; min-height: 20px; }
 
         .empty-state { text-align: center; color: var(--grey); padding: 40px; font-size: 0.9rem; }
+
+        /* Glassmorphic Cards & Accordions */
+        .card-glass {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        .client-section {
+            margin-bottom: 18px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.07);
+            background: rgba(255,255,255,0.02);
+            overflow: hidden;
+        }
+
+        .client-acc-header {
+            padding: 16px 20px;
+            background: rgba(255,255,255,0.04);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
+        }
+        .client-acc-header:hover {
+            background: rgba(255,255,255,0.07);
+        }
+        .client-acc-header .chevron {
+            font-size: 0.75rem;
+            color: var(--accent-color);
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .client-acc-content {
+            padding: 20px;
+            border-top: 1px solid rgba(255,255,255,0.06);
+            background: rgba(0,0,0,0.2);
+        }
+
+        .batch-wrapper {
+            margin-bottom: 14px;
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 8px;
+            background: rgba(255,255,255,0.01);
+            overflow: hidden;
+        }
+
+        .batch-acc-header {
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.02);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.2s;
+        }
+        .batch-acc-header:hover {
+            background: rgba(255,255,255,0.04);
+        }
+        .batch-acc-header .chevron-sub {
+            font-size: 0.7rem;
+            color: var(--grey);
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+
+        .batch-acc-content {
+            padding: 14px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+            background: rgba(0,0,0,0.1);
+        }
+
+        .sub-table th {
+            background: rgba(255,255,255,0.02);
+            font-size: 0.78rem;
+        }
+        .sub-table td {
+            font-size: 0.8rem;
+            padding: 10px 12px;
+        }
+
+        /* Delivery selection toolbar */
+        .delivery-toolbar {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(197,232,77,0.07);
+            border: 1px solid rgba(197,232,77,0.25);
+            border-radius: 8px;
+            padding: 10px 16px;
+            margin-bottom: 14px;
+            gap: 12px;
+        }
+        .delivery-toolbar.visible { display: flex; }
+        .delivery-toolbar .sel-count { font-size: 0.85rem; color: var(--accent-color); font-weight: bold; }
+        .btn-package {
+            background: var(--accent-color);
+            color: var(--bg-color);
+            border: none;
+            border-radius: 6px;
+            padding: 8px 18px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-package:hover { opacity: 0.85; }
+        .btn-package:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Delivery checkbox */
+        .deliver-check {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--accent-color);
+            cursor: pointer;
+        }
+        tr.row-selectable:hover td { background: rgba(197,232,77,0.04); }
+        tr.row-selectable.selected td { background: rgba(197,232,77,0.07); }
     </style>
 </head>
 <body>
@@ -191,6 +320,22 @@
                 <button class="btn" style="height:42px" onclick="addClient()">+ Add Client</button>
             </div>
             <div id="add-error" style="color:#ff6b6b;font-size:0.85rem;min-height:18px;margin-top:4px;"></div>
+        </div>
+
+        <!-- Pipeline Stats -->
+        <div class="stats-row" style="margin-bottom: 24px;">
+            <div class="stat-card" style="background: rgba(197,232,77,0.05); border: 1px solid rgba(197,232,77,0.15);"><div class="num" id="pipe-total">0</div><div class="label">Total Jobs</div></div>
+            <div class="stat-card" style="background: rgba(81,207,102,0.05); border: 1px solid rgba(81,207,102,0.15);"><div class="num" id="pipe-review">0</div><div class="label">In Review</div></div>
+            <div class="stat-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);"><div class="num" id="pipe-delivered">0</div><div class="label">Delivered</div></div>
+            <div class="stat-card" style="background: rgba(255,107,107,0.05); border: 1px solid rgba(255,107,107,0.15);"><div class="num" id="pipe-failed">0</div><div class="label">Failed</div></div>
+        </div>
+
+        <!-- Project Pipeline -->
+        <div class="card">
+            <h2 style="margin-top:0">Operations Center — Project Delivery Pipeline</h2>
+            <div id="pipeline-accordion-container">
+                <div class="empty-state" id="pipeline-loading-msg">Loading pipeline data…</div>
+            </div>
         </div>
 
         <!-- Client Table -->
@@ -260,6 +405,554 @@
         document.getElementById('login-view').style.display = 'none';
         document.getElementById('admin-view').style.display = 'block';
         loadClients();
+        loadPipeline();
+        setInterval(loadPipeline, 15000); // Auto-refresh pipeline
+    }
+
+    // ── Load Pipeline ──────────────────────────────
+    async function loadPipeline() {
+        const container = document.getElementById('pipeline-accordion-container');
+        try {
+            const res = await fetch('/api/admin/pipeline');
+            if (!res.ok) {
+                const detail = await res.text().catch(() => res.statusText);
+                container.innerHTML = `<div class="empty-state" style="color:#ff6b6b;">⚠️ Failed to load pipeline (${res.status}): ${detail}</div>`;
+                return;
+            }
+            const pipeline = await res.json();
+            renderPipeline(pipeline);
+        } catch(e) {
+            container.innerHTML = `<div class="empty-state" style="color:#ff6b6b;">⚠️ Network error loading pipeline. Is the server running?<br><small>${e.message}</small></div>`;
+        }
+    }
+
+    function renderPipeline(items) {
+        // Group items by client_code first
+        const clientsGroup = {};
+        
+        // Calculate pipeline stats
+        let totalCount = items.length;
+        let deliveredCount = 0;
+        let inReviewCount = 0;
+        let failedCount = 0;
+
+        items.forEach(item => {
+            const status = item.status || 'Unknown';
+            if (status === 'Delivered') deliveredCount++;
+            else if (['In Review', 'Review Finished', 'Completed', 'Processing'].includes(status)) inReviewCount++;
+            else if (status.startsWith('Failed') || status === 'Error' || status === 'Unknown') failedCount++;
+
+            const cc = item.client_code;
+            if (!clientsGroup[cc]) {
+                clientsGroup[cc] = {
+                    batches: {},
+                    singles: []
+                };
+            }
+
+            if (item.batch_id) {
+                if (!clientsGroup[cc].batches[item.batch_id]) {
+                    clientsGroup[cc].batches[item.batch_id] = {
+                        parent: null,
+                        files: []
+                    };
+                }
+                if (item.is_batch) {
+                    clientsGroup[cc].batches[item.batch_id].parent = item;
+                } else {
+                    clientsGroup[cc].batches[item.batch_id].files.push(item);
+                }
+            } else {
+                clientsGroup[cc].singles.push(item);
+            }
+        });
+
+        // Update pipeline stats elements
+        document.getElementById('pipe-total').textContent = totalCount;
+        document.getElementById('pipe-review').textContent = inReviewCount;
+        document.getElementById('pipe-delivered').textContent = deliveredCount;
+        document.getElementById('pipe-failed').textContent = failedCount;
+
+        // Preserve open states before re-rendering
+        const openStates = window.accordionOpenStates || {};
+        document.querySelectorAll('.client-acc-content').forEach(el => {
+            if (el.style.display === 'block' && el.id) openStates[el.id] = true;
+            else if (el.id) delete openStates[el.id];
+        });
+        document.querySelectorAll('.batch-acc-content').forEach(el => {
+            if (el.style.display === 'block' && el.id) openStates[el.id] = true;
+            else if (el.id) delete openStates[el.id];
+        });
+        window.accordionOpenStates = openStates;
+
+        const container = document.getElementById('pipeline-accordion-container');
+        container.innerHTML = '';
+
+        if (items.length === 0) {
+            container.innerHTML = '<div class="empty-state">No active projects or batches in the pipeline.</div>';
+            return;
+        }
+
+        // Render client accordions
+        Object.keys(clientsGroup).forEach(clientCode => {
+            const clientData = clientsGroup[clientCode];
+            
+            const clientSection = document.createElement('div');
+            clientSection.className = 'client-section';
+            
+            // Header for Client
+            const clientHeader = document.createElement('div');
+            clientHeader.className = 'client-acc-header';
+            clientHeader.innerHTML = `
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <span class="chevron" id="chevron-${esc(clientCode)}">▶</span>
+                    <h3 style="margin:0; color:var(--accent-color); font-size:1.1rem;">${esc(clientCode)}</h3>
+                </div>
+                <div class="client-stats-badges" style="display:flex; gap:8px;">
+                    <span class="badge-active" style="padding:2px 8px; font-size:0.75rem;">${Object.keys(clientData.batches).length} Batches</span>
+                    <span class="badge-inactive" style="background:rgba(255,255,255,0.06); color:var(--grey); padding:2px 8px; font-size:0.75rem;">${clientData.singles.length} Singles</span>
+                </div>
+            `;
+            
+            const clientContent = document.createElement('div');
+            clientContent.className = 'client-acc-content';
+            clientContent.id = `content-client-${clientCode}`;
+            
+            const isClientOpen = window.accordionOpenStates && window.accordionOpenStates[clientContent.id];
+            clientContent.style.display = isClientOpen ? 'block' : 'none';
+            // chevron is inside clientHeader (not yet in DOM) — use querySelector
+            const clientChevron = clientHeader.querySelector('.chevron');
+            if (clientChevron) clientChevron.style.transform = isClientOpen ? 'rotate(90deg)' : 'rotate(0deg)';
+            
+            clientHeader.onclick = () => {
+                const isClosed = clientContent.style.display === 'none';
+                clientContent.style.display = isClosed ? 'block' : 'none';
+                const chev = clientHeader.querySelector('.chevron');
+                if (chev) chev.style.transform = isClosed ? 'rotate(90deg)' : 'rotate(0deg)';
+                if (window.accordionOpenStates) window.accordionOpenStates[clientContent.id] = isClosed;
+            };
+
+            // Render batches
+            Object.keys(clientData.batches).forEach(batchId => {
+                const batch = clientData.batches[batchId];
+                const parent = batch.parent || { filename: 'Extraction Batch', status: 'Processing', uploaded_on: '' };
+                
+                const batchWrapper = document.createElement('div');
+                batchWrapper.className = 'batch-wrapper';
+                
+                const batchHeader = document.createElement('div');
+                batchHeader.className = 'batch-acc-header';
+                
+                const totalFiles = batch.files.length;
+                const completedFiles = batch.files.filter(f => ['In Review', 'Completed', 'Review Finished', 'Delivered'].includes(f.status)).length;
+                
+                let batchStatusClass = 'badge-inactive';
+                if (parent.status === 'Delivered') batchStatusClass = 'badge-active';
+                else if (parent.status === 'In Review' || parent.status === 'Review Finished' || parent.status === 'Completed') batchStatusClass = 'badge-active';
+                
+                batchHeader.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:10px; flex-grow:1;">
+                        <span class="chevron-sub" id="chevron-${esc(batchId)}">▶</span>
+                        <div>
+                            <strong style="font-size:0.9rem; color:var(--white);">${esc(parent.filename)}</strong>
+                            <div style="font-size:0.75rem; color:var(--grey); margin-top:2px;">
+                                ID: ${esc(batchId)} | ${totalFiles} child files (${completedFiles} analyzed)
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:12px;" onclick="event.stopPropagation()">
+                        <span class="${batchStatusClass}" style="font-size:0.75rem; padding:2px 8px;">${esc(parent.status)}</span>
+                        ${parent.status !== 'Delivered' ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch</button>` : ''}
+                        <button class="btn-small btn-delete" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deleteBatch('${esc(batchId)}')">Delete</button>
+                    </div>
+                `;
+
+                const batchContent = document.createElement('div');
+                batchContent.className = 'batch-acc-content';
+                batchContent.id = `content-batch-${batchId}`;
+                
+                const isBatchOpen = window.accordionOpenStates && window.accordionOpenStates[batchContent.id];
+                batchContent.style.display = isBatchOpen ? 'block' : 'none';
+                
+                // We must update the chevron using querySelector because getElementById won't find it until appended
+                const chevronEl = batchHeader.querySelector('.chevron-sub');
+                if (chevronEl && isBatchOpen) chevronEl.style.transform = 'rotate(90deg)';
+                
+                batchHeader.onclick = () => {
+                    const isClosed = batchContent.style.display === 'none';
+                    batchContent.style.display = isClosed ? 'block' : 'none';
+                    document.getElementById(`chevron-${batchId}`).style.transform = isClosed ? 'rotate(90deg)' : 'rotate(0deg)';
+                    if (window.accordionOpenStates) window.accordionOpenStates[batchContent.id] = isClosed;
+                };
+
+                // Render child files table
+                const table = document.createElement('table');
+                table.className = 'client-table sub-table';
+                table.style.marginTop = '0';
+                table.innerHTML = `
+                    <thead>
+                        <tr>
+                            <th>File Name</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                `;
+                
+                const subTbody = table.querySelector('tbody');
+                if (batch.files.length === 0) {
+                    subTbody.innerHTML = '<tr><td colspan="3" class="empty-state" style="padding:15px; font-size:0.8rem;">Extracting files from zip...</td></tr>';
+                } else {
+                    batch.files.forEach(f => {
+                        const subTr = document.createElement('tr');
+                        const statusClass = f.status === 'Delivered' ? 'badge-active' : (f.status === 'Completed' || f.status === 'Review Finished' ? 'badge-active' : 'badge-inactive');
+                        const progressVal = f.completion_percentage || 0;
+                        
+                        subTr.innerHTML = `
+                            <td><span style="font-size:0.85rem;">${esc(f.filename)}</span></td>
+                            <td><span class="${statusClass}" style="font-size:0.72rem; padding:2px 8px;">${esc(f.status)}</span></td>
+                            <td>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <div style="width: 80px; background: rgba(255,255,255,0.05); height: 5px; border-radius: 2px;">
+                                        <div style="width: ${progressVal}%; background: var(--accent-color); height: 100%; border-radius: 2px;"></div>
+                                    </div>
+                                    <span style="font-size:0.7rem; color:var(--grey);">${progressVal}%</span>
+                                </div>
+                            </td>
+                        `;
+                        subTbody.appendChild(subTr);
+                    });
+                }
+
+                batchContent.appendChild(table);
+                batchWrapper.appendChild(batchHeader);
+                batchWrapper.appendChild(batchContent);
+                clientContent.appendChild(batchWrapper);
+            });
+
+            // Render single files
+            if (clientData.singles.length > 0) {
+                const singlesWrapper = document.createElement('div');
+                singlesWrapper.style.marginTop = '16px';
+                singlesWrapper.innerHTML = `<h4 style="margin:0 0 10px 0; color:var(--grey); font-size:0.8rem; text-transform:uppercase; letter-spacing:0.04em;">Single Uploads</h4>`;
+
+                // ── Delivery toolbar ──────────────────────────────
+                const toolbar = document.createElement('div');
+                toolbar.className = 'delivery-toolbar';
+                toolbar.id = `toolbar-${clientCode}`;
+                toolbar.innerHTML = `
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span class="sel-count" id="sel-count-${esc(clientCode)}">0 files selected</span>
+                        <span style="color:var(--grey);font-size:0.8rem;">— select completed files below to package into a client delivery ZIP</span>
+                    </div>
+                    <button class="btn-package" id="pkg-btn-${esc(clientCode)}" onclick="packageSelectedForDelivery('${esc(clientCode)}')">📦 Package &amp; Deliver Selected</button>
+                `;
+                singlesWrapper.appendChild(toolbar);
+
+                const table = document.createElement('table');
+                table.className = 'client-table';
+                table.style.marginTop = '0';
+                table.innerHTML = `
+                    <thead>
+                        <tr>
+                            <th style="width:28px;"></th>
+                            <th>File Name</th>
+                            <th>Status</th>
+                            <th>Progress</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                `;
+
+                const singlesTbody = table.querySelector('tbody');
+                clientData.singles.forEach(item => {
+                    const tr = document.createElement('tr');
+                    const isDelivered = item.status === 'Delivered';
+                    const isReady = item.completion_percentage === 100 || item.status === 'Review Finished' || item.status === 'Completed';
+                    const statusClass = isDelivered ? 'badge-active' : (isReady ? 'badge-active' : 'badge-inactive');
+
+                    let checkboxHtml = '';
+                    if (isReady && !isDelivered) {
+                        tr.className = 'row-selectable';
+                        checkboxHtml = `<input type="checkbox" class="deliver-check" data-client="${esc(item.client_code)}" data-file="${esc(item.filename)}" onchange="updateSelectionToolbar('${esc(clientCode)}')">`;
+                    }
+
+                    let statusBadge = `<span class="${statusClass}">${esc(item.status)}</span>`;
+                    if (isDelivered) statusBadge = `<span class="badge-active">✓ Delivered</span>`;
+
+                    tr.innerHTML = `
+                        <td>${checkboxHtml}</td>
+                        <td>${esc(item.filename)}</td>
+                        <td>${statusBadge}</td>
+                        <td>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <div style="width: 100px; background: rgba(255,255,255,0.05); height: 6px; border-radius: 3px;">
+                                    <div style="width: ${item.completion_percentage}%; background: var(--accent-color); height: 100%; border-radius: 3px;"></div>
+                                </div>
+                                <span style="font-size:0.75rem; color:var(--grey);">${item.completion_percentage}%</span>
+                            </div>
+                        </td>
+                        <td class="actions">
+                            <button class="btn-small btn-delete" onclick="deleteJob('${esc(item.client_code)}', '${esc(item.filename)}')">Delete</button>
+                        </td>
+                    `;
+                    singlesTbody.appendChild(tr);
+                });
+                singlesWrapper.appendChild(table);
+                clientContent.appendChild(singlesWrapper);
+            }
+
+            clientSection.appendChild(clientHeader);
+            clientSection.appendChild(clientContent);
+            container.appendChild(clientSection);
+        });
+    }
+
+    // ── Selection toolbar update ───────────────────────────────
+    function updateSelectionToolbar(clientCode) {
+        const checks = document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]:checked`);
+        const toolbar = document.getElementById(`toolbar-${clientCode}`);
+        const counter = document.getElementById(`sel-count-${clientCode}`);
+        const pkgBtn = document.getElementById(`pkg-btn-${clientCode}`);
+        const count = checks.length;
+        
+        // Update row highlight
+        document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]`).forEach(cb => {
+            cb.closest('tr').classList.toggle('selected', cb.checked);
+        });
+
+        if (count > 0) {
+            toolbar.classList.add('visible');
+            counter.textContent = `${count} file${count > 1 ? 's' : ''} selected`;
+            pkgBtn.disabled = false;
+        } else {
+            toolbar.classList.remove('visible');
+        }
+    }
+
+    // ── Package selected files into one delivery ZIP ───────────
+    async function packageSelectedForDelivery(clientCode) {
+        const checks = Array.from(document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]:checked`));
+        if (checks.length === 0) return;
+
+        const filenames = checks.map(cb => cb.dataset.file);
+        const pkgBtn = document.getElementById(`pkg-btn-${clientCode}`);
+        pkgBtn.disabled = true;
+        pkgBtn.textContent = '⏳ Packaging…';
+
+        try {
+            const res = await fetch(`/api/admin/package-delivery`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_code: clientCode, filenames })
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                toast(`✅ Delivery package created (${filenames.length} file${filenames.length > 1 ? 's' : ''})! Generating client download link…`);
+                loadPipeline();
+
+                const clientEntry = _clients.find(c => c.client_code === clientCode);
+                if (clientEntry && data.blob_path) {
+                    setTimeout(async () => {
+                        await generateDownloadLink(clientEntry.token, clientEntry.client_name, data.blob_path, `Delivery ${new Date().toLocaleDateString()}`);
+                    }, 600);
+                }
+            } else {
+                alert('Packaging failed: ' + (data.message || data.error || 'Unknown error'));
+                pkgBtn.disabled = false;
+                pkgBtn.innerHTML = '📦 Package &amp; Deliver Selected';
+            }
+        } catch (e) {
+            alert('Network error during packaging: ' + e.message);
+            pkgBtn.disabled = false;
+            pkgBtn.innerHTML = '📦 Package &amp; Deliver Selected';
+        }
+    }
+
+    async function deliverBatch(clientCode, batchId) {
+        if (!confirm(`Are you sure you want to package and deliver batch ${batchId}? This will compile a Gold Standard ZIP.`)) return;
+        
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Packaging...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`/api/admin/batches/${batchId}/deliver`, { method: 'POST' });
+            const data = await res.json();
+            
+            if (res.ok && data.success) {
+                toast(`✅ Batch delivered successfully! Generating client download link...`);
+                loadPipeline();
+                
+                const clientEntry = _clients.find(c => c.client_code === clientCode);
+                if (clientEntry && data.blob_path) {
+                    setTimeout(async () => {
+                        await generateDownloadLink(clientEntry.token, clientEntry.client_name, data.blob_path, `Batch ${batchId}`);
+                    }, 600);
+                }
+            } else {
+                alert('Delivery failed: ' + (data.message || 'Unknown error'));
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        } catch (e) {
+            alert('Network error during batch delivery.');
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    async function deleteBatch(batchId) {
+        if (!confirm(`⚠️ PERMANENTLY DELETE batch ${batchId}?\n\nThis will remove it from local logs and recursively purge files from all Azure Blob containers. This cannot be undone.`)) return;
+        
+        try {
+            const res = await fetch(`/api/admin/batches/${batchId}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                toast(`🗑️ Batch ${batchId} deleted successfully.`);
+                loadPipeline();
+            } else {
+                alert('Deletion failed: ' + (data.detail || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Network error during deletion.');
+        }
+    }
+
+    async function deleteJob(clientCode, filename) {
+        if (!confirm(`⚠️ PERMANENTLY DELETE job ${filename} for ${clientCode}?\n\nThis will remove it from the pipeline. This cannot be undone.`)) return;
+        
+        try {
+            const res = await fetch(`/api/admin/jobs/${clientCode}/${filename}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                toast(`🗑️ Job ${filename} deleted successfully.`);
+                loadPipeline();
+            } else {
+                alert('Deletion failed: ' + (data.message || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Network error during deletion.');
+        }
+    }
+
+    async function deliverFile(clientCode, filename) {
+        if (!confirm(`Deliver final package for ${filename} to ${clientCode}?`)) return;
+        
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Scanning...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch(`/api/export/${clientCode}/${filename}`, { method: 'POST' });
+            const data = await res.json();
+            
+            if (data.success) {
+                toast('✅ Delivery successful! Generating client download link…');
+                loadPipeline();
+                // Auto-generate a download link for the client
+                // Find the client token for this client_code
+                const clientEntry = _clients.find(c => c.client_code === clientCode);
+                if (clientEntry && data.blob_path) {
+                    setTimeout(async () => {
+                        await generateDownloadLink(clientEntry.token, clientEntry.client_name, data.blob_path, filename);
+                    }, 600);
+                } else {
+                    toast('✅ Delivered! Go to All Clients → 📥 Download Link to generate the client link.')
+                }
+            } else if (data.duplicate_warning) {
+                // Show duplicate collateral warning modal
+                showDuplicateWarning(data, clientCode, filename, btn, originalText);
+            } else {
+                alert('Delivery failed: ' + data.message);
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        } catch (e) {
+            alert('Network error during delivery.');
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    function showDuplicateWarning(data, clientCode, filename, btn, originalBtnText) {
+        // Remove existing modal if any
+        const existing = document.getElementById('duplicate-modal');
+        if (existing) existing.remove();
+
+        let matchesHtml = '';
+        for (const m of data.matches) {
+            const sim = (m.similarity * 100).toFixed(1);
+            matchesHtml += `
+                <div style="background:rgba(255,50,50,0.08); border-left:3px solid #ff3232; padding:12px 16px; margin:8px 0; border-radius:4px;">
+                    <strong style="color:#ff3232;">⚠️ ${sim}% Match</strong><br>
+                    <span style="color:var(--grey); font-size:0.85rem;">
+                        <b>Category:</b> ${m.new_item.category} (Item #${m.new_item.item_index})<br>
+                        <b>Matches:</b> ${m.matched_item.image_file} (Item #${m.matched_item.item_index})<br>
+                        <b>Client:</b> ${m.matched_item.client_code}<br>
+                        <b>Logged:</b> ${new Date(m.matched_item.timestamp).toLocaleDateString()}
+                    </span>
+                </div>
+            `;
+        }
+
+        const modal = document.createElement('div');
+        modal.id = 'duplicate-modal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:9999;';
+        modal.innerHTML = `
+            <div style="background:var(--card-bg, #1a1a2e); border:2px solid #ff3232; border-radius:12px; max-width:560px; width:90%; padding:28px; max-height:80vh; overflow-y:auto;">
+                <h2 style="color:#ff3232; margin:0 0 6px 0; font-size:1.3rem;">🚨 COLLATERAL MATCH DETECTED</h2>
+                <p style="color:var(--grey, #aaa); margin:0 0 16px 0; font-size:0.9rem;">
+                    ${data.total_matches} item(s) in <b>${filename}</b> match existing collateral records.
+                    This may indicate <b>Asset Recycling</b> (loan stacking fraud).
+                </p>
+                ${matchesHtml}
+                <div style="display:flex; gap:12px; margin-top:20px; justify-content:flex-end;">
+                    <button onclick="closeDuplicateModal('${clientCode}', '${filename}', false)" 
+                        style="padding:10px 20px; background:#333; color:#fff; border:1px solid #555; border-radius:6px; cursor:pointer; font-size:0.9rem;">
+                        ❌ Reject & Investigate
+                    </button>
+                    <button onclick="closeDuplicateModal('${clientCode}', '${filename}', true)"
+                        style="padding:10px 20px; background:#ff3232; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:0.9rem; font-weight:bold;">
+                        ⚡ Override & Deliver Anyway
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        // Reset the original deliver button
+        btn.textContent = originalBtnText;
+        btn.disabled = false;
+    }
+
+    async function closeDuplicateModal(clientCode, filename, forceDeliver) {
+        const modal = document.getElementById('duplicate-modal');
+        if (modal) modal.remove();
+
+        if (!forceDeliver) {
+            toast('🛑 Delivery blocked. Flagged for investigation.');
+            return;
+        }
+
+        // Admin chose to override — call force endpoint
+        toast('⚡ Override confirmed. Delivering...');
+        try {
+            const res = await fetch(`/api/export/${clientCode}/${filename}/force`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                toast('✅ Delivered with admin override.');
+                loadPipeline();
+            } else {
+                alert('Force delivery failed: ' + data.message);
+            }
+        } catch (e) {
+            alert('Network error during force delivery.');
+        }
     }
 
     // ── Load clients ──────────────────────────────────────
@@ -305,8 +998,9 @@
                 <td style="color:var(--grey)">${esc(c.created_at)}</td>
                 <td>${statusBadge}</td>
                 <td class="token-cell" title="${esc(c.token)}">${esc(c.token)}</td>
-                <td class="actions">
-                    <button class="btn-icon btn-copy" onclick="copyLink('${esc(c.token)}')">Copy Link</button>
+                <td class="actions" style="display:flex;flex-wrap:wrap;gap:4px;">
+                    <button class="btn-icon btn-copy" title="Generate & copy upload link for client" onclick="generateUploadLink('${esc(c.token)}', '${esc(c.client_name)}')">📤 Upload Link</button>
+                    <button class="btn-icon" style="background:rgba(81,207,102,0.12);color:#51cf66;" title="Generate a download link for a delivered file" onclick="openDownloadLinkModal('${esc(c.token)}', '${esc(c.client_code)}', '${esc(c.client_name)}')">📥 Download Link</button>
                     <button class="btn-icon ${toggleClass}" onclick="toggleClient('${esc(c.token)}')">${toggleLabel}</button>
                     <button class="btn-icon btn-rotate" onclick="rotateToken('${esc(c.token)}', '${esc(c.client_name)}')">Rotate</button>
                     <button class="btn-icon btn-delete" onclick="deleteClient('${esc(c.token)}', '${esc(c.client_name)}')">Delete</button>
@@ -335,8 +1029,9 @@
             _clients.unshift(c);
             renderTable(_clients, c.token);
             renderStats(_clients);
-            toast(`Client "${c.client_name}" added — ${c.client_code}`);
-            copyLink(c.token, false);
+            toast(`✅ Client "${c.client_name}" added — ${c.client_code}. Generating upload link…`);
+            // Auto-generate an upload link for the new client
+            setTimeout(() => generateUploadLink(c.token, c.client_name), 300);
         } else {
             errDiv.textContent = 'Failed to add client.';
         }
@@ -381,7 +1076,52 @@
         }
     }
 
-    // ── Copy link ─────────────────────────────────────────
+    // ── Generate Upload Link ──────────────────────────────
+    async function generateUploadLink(token, name) {
+        const res = await fetch(`/api/admin/clients/${token}/generate-upload-link`, { method: 'POST' });
+        if (res.ok) {
+            const { upload_url } = await res.json();
+            const fullUrl = `${location.origin}${upload_url}`;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(fullUrl).catch(() => _fallbackCopy(fullUrl, false));
+            } else {
+                _fallbackCopy(fullUrl, false);
+            }
+            toast(`📤 Upload link for "${name}" copied! Share it with the client.`);
+        } else {
+            alert('Failed to generate upload link.');
+        }
+    }
+
+    // ── Generate Download Link Modal ──────────────────────
+    function openDownloadLinkModal(token, clientCode, clientName) {
+        const blobPath = prompt(
+            `Generate download link for "${clientName}" (${clientCode})\n\nEnter the blob path of the delivered file\n(e.g. CLIENT001/annotated_output_20260512.xlsx):`,
+            `${clientCode}/`
+        );
+        if (!blobPath || !blobPath.trim()) return;
+        const label = prompt('Optional: Enter a label for this download (shown to client):', blobPath.split('/').pop());
+        generateDownloadLink(token, clientName, blobPath.trim(), label || '');
+    }
+
+    async function generateDownloadLink(token, name, blobPath, label) {
+        const body = new URLSearchParams({ blob_path: blobPath, label });
+        const res = await fetch(`/api/admin/clients/${token}/generate-download-link`, { method: 'POST', body });
+        if (res.ok) {
+            const { download_url } = await res.json();
+            const fullUrl = `${location.origin}${download_url}`;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(fullUrl).catch(() => _fallbackCopy(fullUrl, false));
+            } else {
+                _fallbackCopy(fullUrl, false);
+            }
+            toast(`📥 Download link for "${name}" copied! Share it with the client.`);
+        } else {
+            alert('Failed to generate download link.');
+        }
+    }
+
+    // ── Copy link (legacy / token access) ─────────────────
     function copyLink(token, showToast = true) {
         const url = `${location.origin}/access/${token}`;
         if (navigator.clipboard && navigator.clipboard.writeText) {

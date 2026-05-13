@@ -4,7 +4,7 @@ services:
   vaidikai-portal:
     build: .
     ports:
-      - "8000:8000"
+      - "4005:8000"
     env_file:
       - .env
     volumes:
@@ -12,13 +12,41 @@ services:
     restart: always
     depends_on:
       - labelstudio
+    networks:
+      - vaidikai-network
 
   labelstudio:
     image: heartexlabs/label-studio:latest
     ports:
-      - "8080:8080"
+      - "4006:8080"
     volumes:
       - ./labelstudio-data:/label-studio/data
     environment:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
     restart: always
+    networks:
+      - vaidikai-network
+
+  sam-ml-backend:
+    container_name: sam-ml-backend
+    build:
+      context: ../label-studio-ml-backend/label_studio_ml/examples/segment_anything_model
+    environment:
+      - SAM_CHOICE=MobileSAM
+      - LOG_LEVEL=DEBUG
+      - WORKERS=1
+      - THREADS=4
+      - MODEL_DIR=/data/models
+      - LABEL_STUDIO_HOST=http://labelstudio:8080
+      - LABEL_STUDIO_ACCESS_TOKEN=${LABEL_STUDIO_API_KEY}
+    ports:
+      - "4007:9090"  # CHANGED: host port 4007 → container port 9090
+    volumes:
+      - ./labelstudio-data/sam_models:/data
+    restart: always
+    networks:
+      - vaidikai-network
+
+networks:
+  vaidikai-network:
+    driver: bridge

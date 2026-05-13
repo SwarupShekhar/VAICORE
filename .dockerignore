@@ -5,9 +5,16 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 .env
 .git
 .gitignore
+.DS_Store
+.claude/
+.swarm/
+*.zip
+*.tar.gz
+*.log
 scratch/
 test_audio.wav
 upload_log.json
