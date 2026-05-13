@@ -67,33 +67,46 @@ jobs:
             echo "🚀 Starting services..."
             $DC up -d
 
-            echo "⏳ Waiting for health checks (30s)..."
-            sleep 30
+            echo "⏳ Waiting for services to become ready..."
+
+            # ── Helper: wait_for_service <url> <label> <max_attempts> <sleep_interval> ──
+            wait_for_service() {
+              local url="$1"
+              local label="$2"
+              local max_attempts="$3"
+              local interval="$4"
+              local attempt=1
+              while [ $attempt -le $max_attempts ]; do
+                if curl -sf "$url" > /dev/null 2>&1; then
+                  echo "✅ $label is healthy (attempt $attempt/$max_attempts)"
+                  return 0
+                fi
+                echo "  ⌛ Waiting for $label... (attempt $attempt/$max_attempts)"
+                sleep $interval
+                attempt=$((attempt + 1))
+              done
+              echo "❌ $label failed to become healthy after $((max_attempts * interval))s"
+              return 1
+            }
 
             # ── Health checks ────────────────────────────────────────────
             ERRORS=0
 
-            if curl -sf http://localhost:4005/health > /dev/null 2>&1; then
-              echo "✅ Portal (port 4005) is healthy"
-            else
-              echo "❌ Portal (port 4005) failed health check"
-              $DC logs --tail=30 vaidikai-portal
+            # Portal: up to 60s (12 attempts × 5s)
+            if ! wait_for_service "http://localhost:4005/health" "Portal (port 4005)" 12 5; then
+              $DC logs --tail=40 vaidikai-portal
               ERRORS=$((ERRORS+1))
             fi
 
-            if curl -sf http://localhost:4006/health > /dev/null 2>&1; then
-              echo "✅ Label Studio (port 4006) is healthy"
-            else
-              echo "❌ Label Studio (port 4006) failed health check"
-              $DC logs --tail=30 labelstudio
+            # Label Studio: up to 3 minutes (18 attempts × 10s) — needs DB migrations on fresh boot
+            if ! wait_for_service "http://localhost:4006/health" "Label Studio (port 4006)" 18 10; then
+              $DC logs --tail=40 labelstudio
               ERRORS=$((ERRORS+1))
             fi
 
-            if curl -sf http://localhost:4007/health > /dev/null 2>&1; then
-              echo "✅ SAM ML Backend (port 4007) is healthy"
-            else
-              echo "❌ SAM ML Backend (port 4007) failed health check"
-              $DC logs --tail=30 sam-ml-backend
+            # SAM ML Backend: up to 60s (12 attempts × 5s)
+            if ! wait_for_service "http://localhost:4007/health" "SAM ML Backend (port 4007)" 12 5; then
+              $DC logs --tail=40 sam-ml-backend
               ERRORS=$((ERRORS+1))
             fi
 
