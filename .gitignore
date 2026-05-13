@@ -1,5 +1,6 @@
 .env
 upload_log.json
+labelstudio-data/
 __pycache__/
 *.pyc
 *.pyo
@@ -28,6 +29,7 @@ coverage.xml
 .claude/
 .claude-flow/
 .swarm/
+.omc/
 .mcp.json
 
 # Local blueprint files
