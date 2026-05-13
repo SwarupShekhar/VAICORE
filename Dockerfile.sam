@@ -2,33 +2,29 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
-    wget \
-    git \
-    libgl1 \
-    libglib2.0-0 \
+    wget git libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Step 1: Install torch CPU-only FIRST (separate from other packages)
+# 1. PyTorch CPU (needs its own index URL — must be separate)
 RUN pip install --no-cache-dir \
-    torch==2.1.0 \
-    torchvision==0.16.0 \
+    torch==2.1.0 torchvision==0.16.0 \
     --index-url https://download.pytorch.org/whl/cpu
 
-# Step 2: Install remaining dependencies
+# 2. MobileSAM from GitHub source (no valid PyPI distribution exists)
+RUN pip install --no-cache-dir \
+    git+https://github.com/ChaoningZhang/MobileSAM.git
+
+# 3. Label Studio ML + helpers
 RUN pip install --no-cache-dir \
     label-studio-ml==1.0.9 \
     label-studio-sdk \
-    mobile-sam \
     Pillow \
     numpy \
     opencv-python-headless
 
-# Create model directory
 RUN mkdir -p /data/models
 
-# Copy the SAM backend script
 COPY sam_backend.py /app/sam_backend.py
 
 EXPOSE 9090
