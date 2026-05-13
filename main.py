@@ -656,6 +656,7 @@ async def get_annotation_status(
 async def export_results(
     client_code: str,
     filename: str,
+    internal: bool = False,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
 ):
@@ -666,7 +667,7 @@ async def export_results(
         return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
 
     try:
-        result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
+        result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id, internal_export=internal)
 
         if result['status'] == 'success':
             async with aiofiles.open("upload_log.json", "r") as f:
@@ -795,6 +796,7 @@ async def package_delivery(
 async def export_results_force(
     client_code: str,
     filename: str,
+    internal: bool = False,
     vaicore_admin: str = Cookie(None),
 ):
     """Force delivery despite duplicate collateral warnings (admin override)."""
@@ -806,7 +808,7 @@ async def export_results_force(
 
     try:
         result = await asyncio.to_thread(
-            export_and_deliver, client_code, filename, project_id, force_delivery=True
+            export_and_deliver, client_code, filename, project_id, force_delivery=True, internal_export=internal
         )
 
         if result['status'] == 'success':
