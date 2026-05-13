@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vaicore — Secure File Upload</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0d0d12;
+            --surface: #13131a;
+            --surface2: #1a1a24;
+            --border: rgba(255,255,255,0.07);
+            --accent: #c8ff00;
+            --accent-dim: rgba(200,255,0,0.12);
+            --text: #f0f0f5;
+            --grey: #6b6b80;
+            --error: #ff6b6b;
+            --success: #51cf66;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        /* Subtle grid background */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(200,255,0,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(200,255,0,0.02) 1px, transparent 1px);
+            background-size: 48px 48px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .wrap {
+            position: relative;
+            z-index: 1;
+            width: 100%;
+            max-width: 580px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .logo {
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: var(--accent);
+        }
+
+        .client-name {
+            font-size: 0.9rem;
+            color: var(--grey);
+            margin-top: 6px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 36px;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .subtitle {
+            font-size: 0.85rem;
+            color: var(--grey);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        /* Drop zone */
+        .drop-zone {
+            border: 2px dashed rgba(200,255,0,0.25);
+            border-radius: 14px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            background: var(--accent-dim);
+        }
+
+        .drop-zone:hover, .drop-zone.drag-over {
+            border-color: var(--accent);
+            background: rgba(200,255,0,0.08);
+        }
+
+        .drop-zone input[type="file"] {
+            position: absolute;
+            inset: 0;
+            opacity: 0;
+            cursor: pointer;
+            width: 100%;
+            height: 100%;
+        }
+
+        .drop-icon {
+            font-size: 2.5rem;
+            margin-bottom: 14px;
+            display: block;
+        }
+
+        .drop-label {
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        .drop-sub {
+            font-size: 0.78rem;
+            color: var(--grey);
+            margin-top: 6px;
+        }
+
+        .selected-file {
+            display: none;
+            margin-top: 16px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 0.85rem;
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .selected-file.visible { display: flex; }
+
+        .selected-file .fname {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text);
+        }
+
+        .selected-file .fsize {
+            color: var(--grey);
+            font-size: 0.78rem;
+            flex-shrink: 0;
+        }
+
+        .clear-file {
+            background: none;
+            border: none;
+            color: var(--error);
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+
+        /* Language select */
+        .field-group {
+            margin-top: 20px;
+        }
+
+        label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 500;
+            color: var(--grey);
+            margin-bottom: 6px;
+        }
+
+        select {
+            width: 100%;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.9rem;
+            padding: 10px 14px;
+            appearance: none;
+            cursor: pointer;
+        }
+
+        select:focus { outline: none; border-color: var(--accent); }
+
+        /* Upload btn */
+        .btn-upload {
+            width: 100%;
+            margin-top: 24px;
+            background: var(--accent);
+            color: #0d0d12;
+            border: none;
+            border-radius: 10px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 700;
+            padding: 14px;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.15s;
+        }
+
+        .btn-upload:hover:not(:disabled) { opacity: 0.88; transform: translateY(-1px); }
+        .btn-upload:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* Progress */
+        .progress-wrap {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress-wrap.visible { display: block; }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 6px;
+            background: var(--surface2);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: var(--accent);
+            border-radius: 3px;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .progress-label {
+            font-size: 0.8rem;
+            color: var(--grey);
+            margin-top: 8px;
+            text-align: center;
+        }
+
+        /* Result */
+        .result {
+            display: none;
+            margin-top: 20px;
+            border-radius: 10px;
+            padding: 16px;
+            font-size: 0.88rem;
+            text-align: center;
+        }
+
+        .result.success {
+            display: block;
+            background: rgba(81,207,102,0.1);
+            border: 1px solid rgba(81,207,102,0.25);
+            color: var(--success);
+        }
+
+        .result.error {
+            display: block;
+            background: rgba(255,107,107,0.1);
+            border: 1px solid rgba(255,107,107,0.25);
+            color: var(--error);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            margin-top: 28px;
+            font-size: 0.75rem;
+            color: var(--grey);
+        }
+
+        /* Spinner */
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block;
+            width: 14px; height: 14px;
+            border: 2px solid rgba(0,0,0,0.2);
+            border-top-color: #0d0d12;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <header>
+            <div class="logo">Vaicore</div>
+            <div class="client-name" id="client-name-display">Secure Data Portal</div>
+        </header>
+
+        <div class="card">
+            <h1>Upload Your Data Files</h1>
+            <p class="subtitle">
+                Your files are encrypted in transit and stored securely. Our team will process and return the enriched output to you.
+                <br><br>Supported: Audio (MP3, WAV, M4A) · Images (JPG, PNG) · Documents (PDF, DOCX) · Data (CSV, JSON, ZIP)
+            </p>
+
+            <div class="drop-zone" id="drop-zone">
+                <input type="file" id="file-input" accept=".mp3,.wav,.m4a,.ogg,.flac,.mp4,.jpg,.jpeg,.png,.pdf,.docx,.csv,.json,.txt,.zip">
+                <span class="drop-icon">📂</span>
+                <div class="drop-label">Drag & drop your file here</div>
+                <div class="drop-sub">or click to browse</div>
+            </div>
+
+            <div class="selected-file" id="selected-file">
+                <span class="fname" id="file-name-display"></span>
+                <span class="fsize" id="file-size-display"></span>
+                <button class="clear-file" onclick="clearFile()" title="Remove file">✕</button>
+            </div>
+
+            <div class="field-group">
+                <label for="language-select">Primary Language of Content</label>
+                <select id="language-select">
+                    <option value="en">English</option>
+                    <option value="hi">Hindi</option>
+                    <option value="mr">Marathi</option>
+                    <option value="ta">Tamil</option>
+                    <option value="bn">Bengali</option>
+                    <option value="te">Telugu</option>
+                    <option value="gu">Gujarati</option>
+                    <option value="kn">Kannada</option>
+                    <option value="ml">Malayalam</option>
+                    <option value="pa">Punjabi</option>
+                </select>
+            </div>
+
+            <button class="btn-upload" id="upload-btn" onclick="startUpload()" disabled>
+                Select a file to upload
+            </button>
+
+            <div class="progress-wrap" id="progress-wrap">
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-label" id="progress-label">Uploading…</div>
+            </div>
+
+            <div class="result" id="result"></div>
+        </div>
+
+        <footer>
+            Powered by Vaicore · All data is handled with strict confidentiality
+        </footer>
+    </div>
+
+<script>
+    // Extract upload token from URL path: /upload/{token}
+    const uploadToken = location.pathname.split('/upload/')[1];
+    let selectedFile = null;
+
+    // Load client info
+    async function boot() {
+        try {
+            const res = await fetch(`/api/upload-token-info/${uploadToken}`);
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('client-name-display').textContent = `${data.client_name} · Secure Upload Portal`;
+                document.title = `Vaicore — ${data.client_name} Upload`;
+            }
+        } catch(e) {
+            // Non-critical; page still works without client name display
+        }
+    }
+
+    // Drag and drop
+    const dropZone = document.getElementById('drop-zone');
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        const f = e.dataTransfer.files[0];
+        if (f) setFile(f);
+    });
+
+    document.getElementById('file-input').addEventListener('change', e => {
+        const f = e.target.files[0];
+        if (f) setFile(f);
+    });
+
+    function setFile(f) {
+        selectedFile = f;
+        document.getElementById('file-name-display').textContent = f.name;
+        document.getElementById('file-size-display').textContent = formatBytes(f.size);
+        document.getElementById('selected-file').classList.add('visible');
+        const btn = document.getElementById('upload-btn');
+        btn.disabled = false;
+        btn.textContent = 'Upload File';
+        document.getElementById('result').className = 'result';
+        document.getElementById('result').textContent = '';
+    }
+
+    function clearFile() {
+        selectedFile = null;
+        document.getElementById('file-input').value = '';
+        document.getElementById('selected-file').classList.remove('visible');
+        const btn = document.getElementById('upload-btn');
+        btn.disabled = true;
+        btn.textContent = 'Select a file to upload';
+    }
+
+    function formatBytes(b) {
+        if (b < 1024) return b + ' B';
+        if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+        return (b / 1048576).toFixed(2) + ' MB';
+    }
+
+    async function startUpload() {
+        if (!selectedFile) return;
+
+        const btn = document.getElementById('upload-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Uploading…';
+
+        const progressWrap = document.getElementById('progress-wrap');
+        const progressFill = document.getElementById('progress-fill');
+        const progressLabel = document.getElementById('progress-label');
+        const resultEl = document.getElementById('result');
+
+        progressWrap.classList.add('visible');
+        progressFill.style.width = '0%';
+        progressLabel.textContent = 'Uploading…';
+        resultEl.className = 'result';
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('upload_token', uploadToken);
+        formData.append('language', document.getElementById('language-select').value);
+
+        try {
+            // Simulate progress since fetch doesn't expose upload progress easily
+            let prog = 0;
+            const progInterval = setInterval(() => {
+                prog = Math.min(prog + Math.random() * 12, 85);
+                progressFill.style.width = prog + '%';
+            }, 400);
+
+            const res = await fetch('/api/upload-via-token', {
+                method: 'POST',
+                body: formData,
+            });
+
+            clearInterval(progInterval);
+            progressFill.style.width = '100%';
+
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                progressLabel.textContent = 'Upload complete!';
+                resultEl.className = 'result success';
+                resultEl.innerHTML = `
+                    ✅ <strong>${selectedFile.name}</strong> uploaded successfully.<br>
+                    <span style="font-size:0.82rem;opacity:0.8;display:block;margin-top:6px;">
+                        Our team has been notified and will begin processing shortly. You'll receive your enriched output via the link shared by your account manager.
+                    </span>
+                `;
+                btn.innerHTML = '✓ Uploaded';
+                clearFile();
+            } else {
+                throw new Error(data.message || data.detail || 'Upload failed');
+            }
+        } catch(e) {
+            document.getElementById('progress-fill').style.width = '0%';
+            document.getElementById('progress-label').textContent = '';
+            progressWrap.classList.remove('visible');
+            resultEl.className = 'result error';
+            resultEl.textContent = '❌ ' + (e.message || 'Something went wrong. Please try again.');
+            btn.disabled = false;
+            btn.textContent = 'Retry Upload';
+        }
+    }
+
+    boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,93 @@
+name: Deploy to Vultr
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VULTR_SSH_PRIVATE_KEY }}" > ~/.ssh/vultr
+          chmod 600 ~/.ssh/vultr
+          ssh-keyscan -H ${{ secrets.VULTR_IP }} >> ~/.ssh/known_hosts
+
+
+
+      - name: Deploy via SSH
+        run: |
+          ssh -i ~/.ssh/vultr deploy@${{ secrets.VULTR_IP }} << 'EOF'
+            set -e
+            cd /opt/vaidikai-portal/vaidikai-portal
+
+            echo "📦 Pulling latest code..."
+            git pull origin main
+
+            echo "🛑 Stopping old containers..."
+            docker-compose down
+
+            echo "🔨 Building new images..."
+            docker-compose build --no-cache
+
+            echo "🚀 Starting services..."
+            docker-compose up -d
+
+            echo "⏳ Waiting for health checks (30s)..."
+            sleep 30
+
+            # Health check portal
+            if curl -f http://localhost:4005/health; then
+              echo "✅ Portal (port 4005) is healthy"
+            else
+              echo "❌ Portal failed health check"
+              docker-compose logs --tail=50 vaidikai-portal
+              exit 1
+            fi
+
+            # Health check Label Studio
+            if curl -f http://localhost:4006/health; then
+              echo "✅ Label Studio (port 4006) is healthy"
+            else
+              echo "❌ Label Studio failed health check"
+              docker-compose logs --tail=50 labelstudio
+              exit 1
+            fi
+
+            # Health check SAM ML Backend
+            if curl -f http://localhost:4007/health; then
+              echo "✅ SAM ML Backend (port 4007) is healthy"
+            else
+              echo "❌ SAM ML Backend failed health check"
+              docker-compose logs --tail=50 sam-ml-backend
+              exit 1
+            fi
+
+            echo ""
+            echo "🎉 Deployment successful!"
+            echo ""
+            echo "Service URLs:"
+            echo "  Portal:       http://${{ secrets.VULTR_IP }}:4005"
+            echo "  Label Studio: http://${{ secrets.VULTR_IP }}:4006"
+            echo "  SAM ML:       http://${{ secrets.VULTR_IP }}:4007"
+          EOF
+
+      - name: Notify success
+        if: success()
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo "🌐 Portal: http://${{ secrets.VULTR_IP }}:4005"
+          echo "🏷️  Label Studio: http://${{ secrets.VULTR_IP }}:4006"
+          echo "🤖 SAM ML: http://${{ secrets.VULTR_IP }}:4007"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Check logs above."
+          exit 1

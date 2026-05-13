@@ -29,3 +29,8 @@ coverage.xml
 .claude-flow/
 .swarm/
 .mcp.json
+
+# Local blueprint files
+weightestimation.md
+collateral_signatures.json
+

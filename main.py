@@ -14,8 +14,21 @@ import aiofiles
 import asyncio
 from datetime import datetime, timedelta, date
 from pathlib import Path
+import io
+import zipfile
 from processor import process_audio
-from labelstudio_client import push_to_labelstudio
+from labelstudio_client import (
+    push_to_labelstudio,
+    push_jewelry_to_labelstudio,
+    push_form_to_labelstudio,
+    push_clickstream_to_labelstudio,
+    push_text_transcript_to_labelstudio,
+    generate_sas_url
+)
+from runpod_client import run_runpod_inference
+from redactor import mask_text_data
+from ocr_fallback import local_ocr_scan
+from clickstream_parser import parse_clickstream_logs
 from export_handler import check_annotation_status, export_and_deliver
 from dotenv import load_dotenv
 
@@ -101,6 +114,34 @@ def _check_admin(cookie: str | None):
         raise HTTPException(status_code=401, detail="Admin authentication required")
 
 
+async def verify_session_client(client_code: str, session_cookie: str | None) -> dict:
+    """Enforce strict separation: validating the active cookie belongs to the requested client."""
+    if not session_cookie:
+        raise HTTPException(status_code=401, detail="Session cookie required")
+    clients = load_clients()
+    entry = clients.get(session_cookie)
+    if not entry or not entry.get("active") or entry["client_code"] != client_code:
+        raise HTTPException(status_code=403, detail="Access denied: Client code mismatch")
+    return entry
+
+
+async def verify_client_or_admin(
+    client_code: str,
+    vaicore_session: str | None = None,
+    vaicore_admin: str | None = None,
+):
+    """Allow access if the request is from the specific client or an authorized admin."""
+    try:
+        _check_admin(vaicore_admin)
+        return  # Admin is always authorized
+    except HTTPException:
+        pass
+
+    await verify_session_client(client_code, vaicore_session)
+
+
+
+
 def _next_client_code(clients: dict) -> str:
     existing = {v["client_code"] for v in clients.values()}
     n = 1
@@ -113,6 +154,7 @@ def _next_client_code(clients: dict) -> str:
 
 @app.get("/access/{token}")
 async def access(token: str):
+    """Legacy internal access — redirects to Project Manager dashboard."""
     clients = load_clients()
     entry = clients.get(token)
     if not entry or not entry.get("active"):
@@ -126,6 +168,94 @@ async def access(token: str):
         max_age=86400 * 30,
     )
     return response
+
+
+@app.get("/upload/{upload_token}")
+async def client_upload_page(upload_token: str):
+    """Client-facing upload page — no login required, just a valid upload token."""
+    clients = load_clients()
+    # Search all clients for this upload_token
+    matched = None
+    for token, entry in clients.items():
+        if entry.get("upload_token") == upload_token and entry.get("active"):
+            matched = entry
+            break
+    if not matched:
+        return HTMLResponse(content=_INVALID_LINK_HTML, status_code=403)
+    return FileResponse("static/client_upload.html")
+
+
+@app.get("/api/upload-token-info/{upload_token}")
+async def upload_token_info(upload_token: str):
+    """Returns client info for a given upload token (used by client_upload.html)."""
+    clients = load_clients()
+    for token, entry in clients.items():
+        if entry.get("upload_token") == upload_token and entry.get("active"):
+            return {
+                "client_code": entry["client_code"],
+                "client_name": entry["client_name"],
+                "upload_token": upload_token,
+            }
+    raise HTTPException(status_code=403, detail="Invalid or expired upload link")
+
+
+@app.get("/download/{download_token}")
+async def client_download_file(download_token: str):
+    """Admin-generated download link. Validates token and serves the SAS redirect."""
+    clients = load_clients()
+    for token, entry in clients.items():
+        dl_tokens = entry.get("download_tokens", {})
+        if download_token in dl_tokens:
+            blob_path = dl_tokens[download_token]["blob_path"]
+            # Generate a 1-hour SAS URL for download
+            sas_token = generate_blob_sas(
+                account_name=AZURE_STORAGE_ACCOUNT_NAME,
+                container_name="client-delivery",
+                blob_name=blob_path,
+                account_key=AZURE_STORAGE_ACCOUNT_KEY,
+                permission=BlobSasPermissions(read=True),
+                expiry=datetime.utcnow() + timedelta(hours=1)
+            )
+            sas_url = f"https://{AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/client-delivery/{blob_path}?{sas_token}"
+            return RedirectResponse(url=sas_url, status_code=302)
+    return HTMLResponse(content=_INVALID_LINK_HTML, status_code=403)
+
+
+@app.post("/api/admin/clients/{token}/generate-upload-link")
+async def generate_upload_link(token: str, vaicore_admin: str = Cookie(None)):
+    """Generate or regenerate a client's upload token."""
+    _check_admin(vaicore_admin)
+    clients = load_clients()
+    if token not in clients:
+        raise HTTPException(status_code=404, detail="Client not found")
+    upload_token = secrets.token_urlsafe(32)
+    clients[token]["upload_token"] = upload_token
+    save_clients(clients)
+    return {"upload_token": upload_token, "upload_url": f"/upload/{upload_token}"}
+
+
+@app.post("/api/admin/clients/{token}/generate-download-link")
+async def generate_download_link(
+    token: str,
+    blob_path: str = Form(...),
+    label: str = Form(""),
+    vaicore_admin: str = Cookie(None)
+):
+    """Generate a one-time download link for a specific delivered file."""
+    _check_admin(vaicore_admin)
+    clients = load_clients()
+    if token not in clients:
+        raise HTTPException(status_code=404, detail="Client not found")
+    download_token = secrets.token_urlsafe(32)
+    if "download_tokens" not in clients[token]:
+        clients[token]["download_tokens"] = {}
+    clients[token]["download_tokens"][download_token] = {
+        "blob_path": blob_path,
+        "label": label or blob_path.split("/")[-1],
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    save_clients(clients)
+    return {"download_token": download_token, "download_url": f"/download/{download_token}"}
 
 
 @app.get("/api/me")
@@ -146,18 +276,43 @@ async def logout():
     return response
 
 
+@app.post("/api/upload-via-token")
+async def upload_file_via_token(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    upload_token: str = Form(...),
+    language: str = Form("en"),
+):
+    """Client-facing anonymous upload — authenticated via upload_token, not session cookie."""
+    clients = load_clients()
+    matched_entry = None
+    for token, entry in clients.items():
+        if entry.get("upload_token") == upload_token and entry.get("active"):
+            matched_entry = entry
+            break
+    if not matched_entry:
+        raise HTTPException(status_code=403, detail="Invalid or expired upload link")
+    client_code = matched_entry["client_code"]
+
+    # Re-use the same upload logic by calling through the internal pipeline
+    # We pass client_code as a verified value, bypassing session check
+    return await _run_upload_pipeline(background_tasks, file, client_code, language)
+
+
 @app.post("/api/upload")
 async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     client_code: str = Form(...),
     language: str = Form("en"),
+    vaicore_session: str = Cookie(None),
 ):
-    if client_code not in get_valid_client_codes():
-        return JSONResponse(
-            status_code=401,
-            content={"success": False, "message": "Invalid client code"},
-        )
+    await verify_session_client(client_code, vaicore_session)
+    return await _run_upload_pipeline(background_tasks, file, client_code, language)
+
+
+async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFile, client_code: str, language: str):
+
 
     allowed_types = [
         "audio/mpeg",
@@ -175,15 +330,20 @@ async def upload_file(
         "application/json",
         "text/csv",
         "text/plain",
+        "application/zip",
+        "application/x-zip-compressed",
     ]
 
+    safe_filename = os.path.basename(file.filename)
     print(f"DEBUG: File content_type: {file.content_type}")
-    print(f"DEBUG: File filename: {file.filename}")
+    print(f"DEBUG: File filename (sanitized): {safe_filename}")
 
     audio_extensions = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.mp4']
-    is_audio_by_extension = any(file.filename.lower().endswith(ext) for ext in audio_extensions)
+    zip_extensions = ['.zip']
+    is_audio_by_extension = any(safe_filename.lower().endswith(ext) for ext in audio_extensions)
+    is_zip_by_extension = any(safe_filename.lower().endswith(ext) for ext in zip_extensions)
 
-    if file.content_type not in allowed_types and not is_audio_by_extension:
+    if file.content_type not in allowed_types and not is_audio_by_extension and not is_zip_by_extension:
         return JSONResponse(
             status_code=400,
             content={"success": False, "message": f"File type not allowed: {file.content_type}"},
@@ -210,7 +370,7 @@ async def upload_file(
                 read_timeout=600,
             ) as blob_service_client:
                 timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-                blob_name = f"{client_code}/{timestamp}_{file.filename}"
+                blob_name = f"{client_code}/{timestamp}_{safe_filename}"
                 blob_client = blob_service_client.get_blob_client(
                     container="client-intake", blob=blob_name
                 )
@@ -231,13 +391,19 @@ async def upload_file(
                 )
 
 
+    is_zip = is_zip_by_extension or file.content_type in ["application/zip", "application/x-zip-compressed"]
+    batch_id = f"BATCH_{timestamp}" if is_zip else None
+
     log_entry = {
         "client_code": client_code,
-        "filename": file.filename,
+        "filename": safe_filename,
         "file_size": file_size,
         "timestamp": timestamp,
-        "status": "Uploaded",
+        "status": "Processing ZIP" if is_zip else "Uploaded",
     }
+    if is_zip:
+        log_entry["batch_id"] = batch_id
+        log_entry["is_batch"] = True
 
     logs = []
     try:
@@ -255,18 +421,83 @@ async def upload_file(
     audio_types = [
         "audio/mpeg", "audio/wav", "audio/x-m4a", "audio/ogg", "audio/flac", "audio/mp4",
     ]
+    image_types = [
+        "image/jpeg", "image/png", "image/webp", "image/gif", "image/tiff"
+    ]
+    doc_types = [
+        "application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ]
 
-    if file.content_type in audio_types or is_audio_by_extension:
+    filename_lower = safe_filename.lower()
+    
+    if is_zip:
+        background_tasks.add_task(
+            run_zip_batch_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+            batch_id=batch_id,
+        )
+    # 1. Dispatch Audio Files
+    elif file.content_type in audio_types or is_audio_by_extension:
         background_tasks.add_task(
             run_full_pipeline,
             blob_filename=blob_name,
             client_code=client_code,
             language=language,
-            original_filename=file.filename,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+        )
+    # 2. Dispatch Secure Form Scans / Documents
+    elif (
+        file.content_type in doc_types 
+        or any(ext in filename_lower for ext in [".pdf", ".doc", ".docx"])
+        or any(keyword in filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"])
+    ):
+        background_tasks.add_task(
+            run_form_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+        )
+    # 3. Dispatch Text Transcripts (shared raw transcripts instead of audio files)
+    elif (
+        any(keyword in filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"])
+        or filename_lower.endswith(".txt")
+    ):
+        background_tasks.add_task(
+            run_transcript_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+        )
+    # 4. Dispatch Clickstream Sequence Logs
+    elif (
+        file.content_type in ["application/json", "text/csv"]
+        or any(ext in filename_lower for ext in [".json", ".csv"])
+        or "clickstream" in filename_lower
+    ):
+        background_tasks.add_task(
+            run_clickstream_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+        )
+    # 5. Dispatch Jewelry / Object Detection Images
+    elif file.content_type in image_types or any(ext in filename_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+        background_tasks.add_task(
+            run_jewelry_pipeline,
+            blob_filename=blob_name,
+            client_code=client_code,
+            original_filename=safe_filename,
             timestamp=timestamp,
         )
 
-    return {"success": True, "file_name": file.filename, "upload_id": blob_name}
+    return {"success": True, "file_name": safe_filename, "upload_id": blob_name, "batch_id": batch_id}
 
 
 async def update_log_status(client_code: str, filename: str, timestamp: str, status: str, **kwargs):
@@ -297,9 +528,12 @@ async def update_log_status(client_code: str, filename: str, timestamp: str, sta
 
 
 @app.get("/api/files/{client_code}")
-async def get_files(client_code: str):
-    if client_code not in get_valid_client_codes():
-        raise HTTPException(status_code=401, detail="Invalid client code")
+async def get_files(
+    client_code: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
     status_map = {}
     logs = []
@@ -338,12 +572,15 @@ async def get_files(client_code: str):
             original_name = parts[2] if len(parts) >= 3 else full_name
 
             log_entry = next(
-                (l for l in logs if l.get("client_code") == client_code and l.get("filename") == original_name),
+                (l for l in reversed(logs) if l.get("client_code") == client_code and l.get("filename") == original_name),
                 {},
             )
             status = log_entry.get("status", "Received")
             lang_code = log_entry.get("language")
             language = LANGUAGE_MAP.get(lang_code, "Detecting...") if lang_code else "Detecting..."
+            batch_id = log_entry.get("batch_id")
+            parent_zip = log_entry.get("parent_zip")
+            is_batch = log_entry.get("is_batch", False)
 
             transcript_name = f"{client_code}/{full_name}_transcript.json"
             transcript_available = transcript_name in transcript_blobs
@@ -357,6 +594,9 @@ async def get_files(client_code: str):
                     "status": status,
                     "language": language,
                     "transcript_available": transcript_available,
+                    "batch_id": batch_id,
+                    "parent_zip": parent_zip,
+                    "is_batch": is_batch
                 }
             )
 
@@ -364,9 +604,13 @@ async def get_files(client_code: str):
 
 
 @app.get("/api/transcript/{client_code}/{full_name}")
-async def get_transcript(client_code: str, full_name: str):
-    if client_code not in get_valid_client_codes():
-        raise HTTPException(status_code=401, detail="Invalid client code")
+async def get_transcript(
+    client_code: str,
+    full_name: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -387,26 +631,34 @@ async def get_transcript(client_code: str, full_name: str):
 
 
 @app.get("/api/status/{client_code}/{filename}")
-async def get_annotation_status(client_code: str, filename: str):
-    if client_code not in get_valid_client_codes():
-        return {"status": "error", "message": "Invalid client code"}
+async def get_annotation_status(
+    client_code: str,
+    filename: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
+    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
     if not project_id:
-        return {"status": "error", "message": "LABEL_STUDIO_PROJECT_ID not configured"}
+        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
 
     status = await asyncio.to_thread(check_annotation_status, client_code, project_id, filename)
     return status
 
 
 @app.post("/api/export/{client_code}/{filename}")
-async def export_results(client_code: str, filename: str):
-    if client_code not in get_valid_client_codes():
-        return {"status": "error", "message": "Invalid client code"}
+async def export_results(
+    client_code: str,
+    filename: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = os.getenv("LABEL_STUDIO_PROJECT_ID")
+    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
     if not project_id:
-        return {"status": "error", "message": "LABEL_STUDIO_PROJECT_ID not configured"}
+        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
 
     try:
         result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
@@ -418,12 +670,32 @@ async def export_results(client_code: str, filename: str):
 
             for log in logs:
                 if log.get("client_code") == client_code and log.get("filename") == filename:
-                    log["status"] = "Completed"
-
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
-
-            return {"success": True, "message": "Results exported and delivered to your download section.", "result": result}
+                    log["status"] = "Delivered"
+                    break
+            
+            try:
+                async with aiofiles.open("upload_log.json", "w") as f:
+                    await f.write(json.dumps(logs, indent=2))
+            except Exception as e:
+                print(f"Failed to update log to Delivered: {e}")
+            
+            # Use the actual exported filename (zip/xlsx) for the download link, not the raw media filename
+            exported_filename = result.get("xlsx_filename", filename)
+            return {
+                "success": True,
+                "message": result.get("message"),
+                "blob_path": result.get("blob_path", f"{client_code}/{exported_filename}")
+            }
+        
+        elif result['status'] == 'duplicate_warning':
+            # Return structured duplicate alert to admin dashboard
+            return {
+                "success": False,
+                "duplicate_warning": True,
+                "matches": result.get("matches", []),
+                "total_matches": result.get("total_matches", 0),
+                "message": result.get("message", "Duplicate collateral detected"),
+            }
         else:
             return {"success": False, "message": result.get("error", "Export failed")}
 
@@ -432,10 +704,140 @@ async def export_results(client_code: str, filename: str):
         return {"success": False, "message": str(e)}
 
 
+# ── Selective delivery endpoint ───────────────────────────────────────────────────
+@app.post("/api/admin/package-delivery")
+async def package_delivery(
+    request: Request,
+    vaicore_admin: str = Cookie(None),
+):
+    """PM selects completed files → builds one ZIP from their LS exports → uploads to client-delivery → returns blob_path."""
+    _check_admin(vaicore_admin)
+    body = await request.json()
+    client_code: str = body.get("client_code", "")
+    filenames: list = body.get("filenames", [])
+
+    if not client_code or not filenames:
+        raise HTTPException(status_code=400, detail="client_code and filenames are required")
+
+    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+
+    zip_buffer = io.BytesIO()
+    exported_files = []
+    errors = []
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename in filenames:
+            try:
+                # Export this file’s annotations from Label Studio
+                result = await asyncio.to_thread(
+                    export_and_deliver, client_code, filename, project_id
+                )
+
+                if result.get("status") == "success":
+                    exported_fname = result.get("xlsx_filename", filename)
+                    blob_name_in_delivery = f"{client_code}/{exported_fname}"
+
+                    # Download the just-exported blob and add it to the zip
+                    conn_str = AZURE_STORAGE_CONNECTION_STRING
+                    try:
+                        from azure.storage.blob import BlobServiceClient as SyncBSC
+                        sync_client = SyncBSC.from_connection_string(conn_str)
+                        blob_c = sync_client.get_blob_client(container="client-delivery", blob=blob_name_in_delivery)
+                        blob_data = blob_c.download_blob().readall()
+                        zf.writestr(exported_fname, blob_data)
+                        exported_files.append(filename)
+                    except Exception as dl_err:
+                        errors.append(f"{filename}: download failed after export ({dl_err})")
+                else:
+                    errors.append(f"{filename}: {result.get('error', 'export failed')}")
+
+            except Exception as e:
+                errors.append(f"{filename}: {str(e)}")
+
+    if not exported_files:
+        return {"success": False, "message": "No files could be exported.", "errors": errors}
+
+    zip_buffer.seek(0)
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    zip_blob_name = f"{client_code}/delivery_package_{timestamp}.zip"
+
+    # Upload the final ZIP to client-delivery
+    async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as bsc:
+        bc = bsc.get_blob_client(container="client-delivery", blob=zip_blob_name)
+        await bc.upload_blob(zip_buffer.read(), overwrite=True)
+
+    # Mark all packaged files as Delivered in the log
+    async with aiofiles.open("upload_log.json", "r") as f:
+        logs = json.loads(await f.read())
+
+    for log in logs:
+        if log.get("client_code") == client_code and log.get("filename") in exported_files:
+            log["status"] = "Delivered"
+
+    async with aiofiles.open("upload_log.json", "w") as f:
+        await f.write(json.dumps(logs, indent=2))
+
+    return {
+        "success": True,
+        "packaged": len(exported_files),
+        "blob_path": zip_blob_name,
+        "errors": errors,
+        "message": f"Packaged {len(exported_files)} file(s) into {zip_blob_name}"
+    }
+
+
+@app.post("/api/export/{client_code}/{filename}/force")
+async def export_results_force(
+    client_code: str,
+    filename: str,
+    vaicore_admin: str = Cookie(None),
+):
+    """Force delivery despite duplicate collateral warnings (admin override)."""
+    _check_admin(vaicore_admin)
+
+    project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+    if not project_id:
+        return {"status": "error", "message": "LABEL_STUDIO_JEWELRY_PROJECT_ID not configured"}
+
+    try:
+        result = await asyncio.to_thread(
+            export_and_deliver, client_code, filename, project_id, force_delivery=True
+        )
+
+        if result['status'] == 'success':
+            async with aiofiles.open("upload_log.json", "r") as f:
+                content = await f.read()
+                logs = json.loads(content)
+
+            for log in logs:
+                if log.get("client_code") == client_code and log.get("filename") == filename:
+                    log["status"] = "Delivered (Override)"
+                    break
+            
+            try:
+                async with aiofiles.open("upload_log.json", "w") as f:
+                    await f.write(json.dumps(logs, indent=2))
+            except Exception as e:
+                print(f"Failed to update log to Delivered (Override): {e}")
+            
+            return {"success": True, "message": result.get("message") + " [Admin Override]"}
+        else:
+            return {"success": False, "message": result.get("error", "Export failed")}
+
+    except Exception as e:
+        print(f"ERROR in force export API: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+
+
 @app.get("/api/download/{client_code}/{filename}")
-async def download_file(client_code: str, filename: str):
-    if client_code not in get_valid_client_codes():
-        raise HTTPException(status_code=401, detail="Invalid client code")
+async def download_file(
+    client_code: str,
+    filename: str,
+    vaicore_session: str = Cookie(None),
+    vaicore_admin: str = Cookie(None),
+):
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -454,10 +856,10 @@ async def download_file(client_code: str, filename: str):
         blob_name=blob_name,
         account_key=AZURE_STORAGE_ACCOUNT_KEY,
         permission=BlobSasPermissions(read=True),
-        expiry=datetime.utcnow() + timedelta(hours=1),
+        expiry=datetime.utcnow() + timedelta(hours=72),
     )
     download_url = f"https://{AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/client-delivery/{blob_name}?{sas_token}"
-    return {"download_url": download_url, "expires_in": "1 hour"}
+    return {"download_url": download_url, "expires_in": "72 hours"}
 
 
 @app.get("/")
@@ -495,6 +897,101 @@ async def admin_logout():
     response = JSONResponse(content={"success": True})
     response.delete_cookie("vaicore_admin")
     return response
+
+
+@app.get("/api/admin/pipeline")
+async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
+    _check_admin(vaicore_admin)
+    try:
+        async with aiofiles.open("upload_log.json", "r") as f:
+            content = await f.read()
+        logs = json.loads(content)
+        
+        # Sort logs by timestamp descending
+        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        # Limit to last 50 for performance
+        pipeline = []
+        project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+        
+        for entry in logs[:200]:
+            client_code = entry.get("client_code")
+            filename = entry.get("filename")
+            status = entry.get("status")
+            
+            # Check LS status if it's in review
+            completion = 0
+            if status in ("In Review", "Completed", "Review Finished"):
+                try:
+                    ls_status = await asyncio.to_thread(
+                        check_annotation_status, client_code, project_id, filename
+                    )
+                    completion = ls_status.get("completion_percentage", 0)
+                except Exception:
+                    pass
+            
+            pipeline.append({
+                "client_code": client_code,
+                "filename": filename,
+                "status": status or "Unknown",
+                "uploaded_on": entry.get("timestamp"),
+                "language": entry.get("language"),
+                "completion_percentage": completion,
+                "batch_id": entry.get("batch_id"),
+                "is_batch": entry.get("is_batch", False),
+                "parent_zip": entry.get("parent_zip")
+            })
+            
+        return pipeline
+    except Exception as e:
+        print(f"Admin pipeline error: {e}")
+        return []
+
+
+@app.delete("/api/admin/jobs/{client_code}/{filename}")
+async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str = Cookie(None)):
+    """Deletes an old or failed job from the upload log, tidying up the operations center."""
+    _check_admin(vaicore_admin)
+    try:
+        async with aiofiles.open("upload_log.json", "r") as f:
+            logs = json.loads(await f.read())
+            
+        initial_len = len(logs)
+        logs = [log for log in logs if not (log.get("client_code") == client_code and log.get("filename") == filename)]
+        
+        if len(logs) < initial_len:
+            async with aiofiles.open("upload_log.json", "w") as f:
+                await f.write(json.dumps(logs, indent=2))
+            return {"success": True, "message": "Job deleted successfully"}
+        else:
+            return {"success": False, "message": "Job not found"}
+            
+    except Exception as e:
+        print(f"Admin delete error: {e}")
+        return {"success": False, "message": str(e)}
+
+@app.delete("/api/admin/batches/{batch_id}")
+async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
+    """Deletes an entire batch from the pipeline."""
+    _check_admin(vaicore_admin)
+    try:
+        async with aiofiles.open("upload_log.json", "r") as f:
+            logs = json.loads(await f.read())
+            
+        initial_len = len(logs)
+        logs = [log for log in logs if log.get("batch_id") != batch_id]
+        
+        if len(logs) < initial_len:
+            async with aiofiles.open("upload_log.json", "w") as f:
+                await f.write(json.dumps(logs, indent=2))
+            return {"success": True, "message": "Batch deleted successfully"}
+        else:
+            return {"success": False, "message": "Batch not found"}
+            
+    except Exception as e:
+        print(f"Admin delete batch error: {e}")
+        return {"success": False, "message": str(e)}
+
 
 
 @app.get("/api/admin/clients")
@@ -607,6 +1104,7 @@ def run_full_pipeline(
                     client_code,
                     original_filename,
                     processed_blob=result.get('processed_blob'),
+                    language=result.get('language'),
                 )
                 print(f"Label Studio push result: {ls_result}")
                 if ls_result.get('status') == 'success':
@@ -632,25 +1130,519 @@ def run_full_pipeline(
             pass
 
 
+async def run_jewelry_pipeline(
+    blob_filename: str,
+    client_code: str,
+    original_filename: str,
+    timestamp: str,
+):
+    try:
+        print(f"Starting jewelry classification pipeline for {client_code}/{original_filename}")
+        await update_log_status(client_code, original_filename, timestamp, "Processing Image")
+
+        # 1. Get secure SAS URL for RunPod
+        image_url = generate_sas_url(original_filename, client_code)
+        
+        # Redact the security signature token when printing to container logs
+        clean_log_url = image_url.split("?")[0]
+        print(f"Generated secure image url: {clean_log_url}")
+
+        # 2. Trigger serverless RunPod prediction in a non-blocking threadpool
+        inference_result = await asyncio.to_thread(run_runpod_inference, image_url, task_type="jewelry")
+        
+        if inference_result.get("status") == "success":
+            await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+            predictions = inference_result.get("predictions", [])
+            print(f"Inference complete: detected {len(predictions)} items.")
+
+            # 3. Push bounding boxes to Label Studio inside a non-blocking threadpool
+            ls_result = await asyncio.to_thread(push_jewelry_to_labelstudio, original_filename, client_code, predictions)
+            if ls_result.get("status") == "success":
+                await update_log_status(client_code, original_filename, timestamp, "In Review", predictions_count=len(predictions))
+            else:
+                await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
+        else:
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Inference)", error=inference_result.get("message"))
+
+    except Exception as e:
+        print(f"Jewelry pipeline error: {str(e)}")
+        try:
+            await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
+        except Exception:
+            pass
+
+
+async def run_form_pipeline(
+    blob_filename: str,
+    client_code: str,
+    original_filename: str,
+    timestamp: str,
+):
+    try:
+        print(f"Starting highly secure form OCR pipeline for {client_code}/{original_filename}")
+        await update_log_status(client_code, original_filename, timestamp, "Parsing Form")
+
+        # 1. Get secure SAS URL for local OCR scanner
+        doc_url = generate_sas_url(original_filename, client_code)
+        
+        clean_log_url = doc_url.split("?")[0]
+        print(f"Generated secure document url: {clean_log_url}")
+
+        raw_text = ""
+        # 2. Extract raw OCR from RunPod
+        try:
+            inference_result = await asyncio.to_thread(run_runpod_inference, doc_url, task_type="form")
+            if inference_result.get("status") == "success":
+                raw_text = inference_result.get("raw_ocr_text", "")
+                print("RunPod OCR completed successfully.")
+            else:
+                print(f"WARNING: RunPod OCR returned non-success status. Message: {inference_result.get('message')}")
+                raise Exception("Non-success RunPod response")
+        except Exception as e:
+            print(f"WARNING: RunPod Form OCR failed ({str(e)}). Routing to local OCR Fallback Sandbox...")
+            # Route to our robust local OCR fallbacks (EasyOCR or Sandbox Simulation)
+            raw_text = await asyncio.to_thread(local_ocr_scan, doc_url)
+        
+        # 3. Apply Local PII Redaction/Masking before reviewer exposure (Name, Phone, Bank, Aadhaar, PAN)
+        anonymized_text = mask_text_data(raw_text)
+        
+        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        
+        # 4. Push masked data to secure Label Studio project
+        ls_result = await asyncio.to_thread(push_form_to_labelstudio, original_filename, client_code, anonymized_text)
+        if ls_result.get("status") == "success":
+            await update_log_status(client_code, original_filename, timestamp, "In Review")
+        else:
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
+
+    except Exception as e:
+        print(f"Form pipeline error: {str(e)}")
+        try:
+            await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
+        except Exception:
+            pass
+
+
+async def run_clickstream_pipeline(
+    blob_filename: str,
+    client_code: str,
+    original_filename: str,
+    timestamp: str,
+):
+    try:
+        print(f"Starting clickstream sequence pipeline for {client_code}/{original_filename}")
+        await update_log_status(client_code, original_filename, timestamp, "Parsing Logs")
+        
+        # 1. Fetch raw log bytes from Azure Blob Intake container
+        raw_content = b""
+        try:
+            async with BlobServiceClient.from_connection_string(
+                AZURE_STORAGE_CONNECTION_STRING
+            ) as blob_service_client:
+                blob_client = blob_service_client.get_blob_client(
+                    container="client-intake", blob=blob_filename
+                )
+                if await blob_client.exists():
+                    blob_data = await blob_client.download_blob()
+                    raw_content = await blob_data.readall()
+                    print(f"Successfully downloaded raw clickstream content: {len(raw_content)} bytes")
+        except Exception as e:
+            print(f"WARNING: Failed to fetch raw clickstream blob from Azure ({str(e)}). Proceeding with simulation fallback...")
+
+        # 2. Parse clickstream timeline events dynamically using our analysis engine
+        clickstream_data = await asyncio.to_thread(parse_clickstream_logs, raw_content, original_filename)
+        
+        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        
+        # 3. Push timeline actions to Label Studio inside threadpool
+        ls_result = await asyncio.to_thread(push_clickstream_to_labelstudio, original_filename, client_code, clickstream_data)
+        if ls_result.get("status") == "success":
+            await update_log_status(client_code, original_filename, timestamp, "In Review")
+        else:
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
+
+    except Exception as e:
+        print(f"Clickstream pipeline error: {str(e)}")
+        try:
+            await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
+        except Exception:
+            pass
+
+
+async def run_transcript_pipeline(
+    blob_filename: str,
+    client_code: str,
+    original_filename: str,
+    timestamp: str,
+):
+    try:
+        print(f"Starting text transcript pipeline for {client_code}/{original_filename}")
+        await update_log_status(client_code, original_filename, timestamp, "Parsing Logs")
+        
+        # 1. Fetch raw content from Azure blob
+        raw_content = b""
+        try:
+            from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
+            async with AsyncBlobServiceClient.from_connection_string(
+                AZURE_STORAGE_CONNECTION_STRING
+            ) as blob_service_client:
+                blob_client = blob_service_client.get_blob_client(
+                    container="client-intake", blob=blob_filename
+                )
+                if await blob_client.exists():
+                    blob_data = await blob_client.download_blob()
+                    raw_content = await blob_data.readall()
+                    print(f"Successfully downloaded raw transcript content: {len(raw_content)} bytes")
+        except Exception as e:
+            print(f"WARNING: Failed to fetch raw transcript blob from Azure ({str(e)}). Proceeding with default template...")
+
+        # 2. Parse text transcript dynamically
+        from transcript_parser import parse_transcript_content
+        segments = await asyncio.to_thread(parse_transcript_content, raw_content, original_filename)
+        
+        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        
+        # 3. Push segments with pre-annotations to Label Studio inside threadpool
+        ls_result = await asyncio.to_thread(push_text_transcript_to_labelstudio, original_filename, client_code, segments)
+        if ls_result.get("status") == "success":
+            await update_log_status(client_code, original_filename, timestamp, "In Review")
+        else:
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
+
+    except Exception as e:
+        print(f"Transcript pipeline error: {str(e)}")
+        try:
+            await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
+        except Exception:
+            pass
+
+
+
 async def _run_webhook_export(client_code: str, original_filename: str, project_id: str, label_id: str):
     try:
-        result = await asyncio.to_thread(export_and_deliver, client_code, original_filename, project_id, label_id)
-        if result.get("status") == "success":
-            try:
-                async with aiofiles.open("upload_log.json", "r") as f:
-                    content = await f.read()
-                logs = json.loads(content)
-                for log in logs:
-                    if log.get("client_code") == client_code and log.get("filename") == original_filename:
-                        log["status"] = "Completed"
-                        break
-                async with aiofiles.open("upload_log.json", "w") as f:
-                    await f.write(json.dumps(logs, indent=2))
-            except Exception as e:
-                print(f"Log update failed after webhook export: {e}")
-        print(f"Webhook export result: {result}")
+        # Gatekeeper Workflow: DO NOT auto-deliver. 
+        # Just update the upload log to trigger the Admin Dashboard's manual "Deliver to Client" button!
+        try:
+            async with aiofiles.open("upload_log.json", "r") as f:
+                content = await f.read()
+            logs = json.loads(content)
+            for log in logs:
+                if log.get("client_code") == client_code and log.get("filename") == original_filename:
+                    log["status"] = "Review Finished"
+                    break
+            async with aiofiles.open("upload_log.json", "w") as f:
+                await f.write(json.dumps(logs, indent=2))
+            print(f"Webhook processed: Status updated to 'Review Finished' for {client_code}/{original_filename}")
+        except Exception as e:
+            print(f"Log update failed in webhook: {e}")
     except Exception as e:
-        print(f"Webhook export failed: {e}")
+        print(f"Webhook pipeline failed: {e}")
+
+
+async def run_zip_batch_pipeline(
+    blob_filename: str,
+    client_code: str,
+    original_filename: str,
+    timestamp: str,
+    batch_id: str,
+):
+    try:
+        print(f"Starting ZIP batch pipeline for {client_code}/{original_filename} (Batch ID: {batch_id})")
+        # 1. Download the ZIP file from Azure client-intake container
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            blob_client = blob_service_client.get_blob_client(container="client-intake", blob=blob_filename)
+            blob_data = await blob_client.download_blob()
+            zip_content = await blob_data.readall()
+
+        import zipfile
+        import io
+        import tempfile
+        import shutil
+
+        temp_dir = Path("scratch/batches") / batch_id
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(io.BytesIO(zip_content)) as z:
+            z.extractall(temp_dir)
+
+        # Walk through files recursively
+        extracted_files = []
+        for root, dirs, files in os.walk(temp_dir):
+            for file in files:
+                if file.startswith(".") or file.startswith("__") or "macosx" in root.lower():
+                    continue
+                full_path = Path(root) / file
+                relative_path = full_path.relative_to(temp_dir)
+                extracted_files.append((full_path, relative_path.as_posix()))
+
+        print(f"ZIP batch extracted {len(extracted_files)} valid files.")
+
+        if not extracted_files:
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Empty ZIP)", batch_id=batch_id)
+            return
+
+        # Initialize tracking total files
+        await update_log_status(
+            client_code,
+            original_filename,
+            timestamp,
+            "Processing Batch",
+            batch_id=batch_id,
+            total_files=len(extracted_files),
+            processed_files=0
+        )
+
+        # Upload files back and run pipelines
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            for idx, (file_path, rel_path_str) in enumerate(extracted_files):
+                file_size = file_path.stat().st_size
+                with open(file_path, "rb") as f:
+                    file_content = f.read()
+
+                sub_safe_filename = os.path.basename(rel_path_str)
+                sub_blob_name = f"{client_code}/batches/{batch_id}/{sub_safe_filename}"
+                sub_blob_client = blob_service_client.get_blob_client(container="client-intake", blob=sub_blob_name)
+                await sub_blob_client.upload_blob(file_content, overwrite=True)
+
+                sub_timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+                sub_log_entry = {
+                    "client_code": client_code,
+                    "filename": sub_safe_filename,
+                    "file_size": file_size,
+                    "timestamp": sub_timestamp,
+                    "status": "Uploaded",
+                    "batch_id": batch_id,
+                    "parent_zip": original_filename,
+                    "sub_blob_name": sub_blob_name
+                }
+
+                # Read and write to logs safely
+                async with aiofiles.open("upload_log.json", "r") as lf:
+                    log_content = await lf.read()
+                    logs = json.loads(log_content)
+                logs.append(sub_log_entry)
+                async with aiofiles.open("upload_log.json", "w") as lf:
+                    await lf.write(json.dumps(logs, indent=2))
+
+                sub_filename_lower = sub_safe_filename.lower()
+                audio_extensions = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.mp4']
+                doc_extensions = ['.pdf', '.doc', '.docx']
+                image_extensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.tiff']
+                data_extensions = ['.json', '.csv']
+
+                if any(sub_filename_lower.endswith(ext) for ext in audio_extensions):
+                    asyncio.create_task(run_full_pipeline(
+                        blob_filename=sub_blob_name,
+                        client_code=client_code,
+                        language="en",
+                        original_filename=sub_safe_filename,
+                        timestamp=sub_timestamp
+                    ))
+                elif any(ext in sub_filename_lower for ext in doc_extensions) or any(keyword in sub_filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"]):
+                    asyncio.create_task(run_form_pipeline(
+                        blob_filename=sub_blob_name,
+                        client_code=client_code,
+                        original_filename=sub_safe_filename,
+                        timestamp=sub_timestamp
+                    ))
+                elif any(keyword in sub_filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"]) or sub_filename_lower.endswith(".txt"):
+                    asyncio.create_task(run_transcript_pipeline(
+                        blob_filename=sub_blob_name,
+                        client_code=client_code,
+                        original_filename=sub_safe_filename,
+                        timestamp=sub_timestamp
+                    ))
+                elif any(sub_filename_lower.endswith(ext) for ext in data_extensions) or "clickstream" in sub_filename_lower:
+                    asyncio.create_task(run_clickstream_pipeline(
+                        blob_filename=sub_blob_name,
+                        client_code=client_code,
+                        original_filename=sub_safe_filename,
+                        timestamp=sub_timestamp
+                    ))
+                elif any(sub_filename_lower.endswith(ext) for ext in image_extensions):
+                    asyncio.create_task(run_jewelry_pipeline(
+                        blob_filename=sub_blob_name,
+                        client_code=client_code,
+                        original_filename=sub_safe_filename,
+                        timestamp=sub_timestamp
+                    ))
+                else:
+                    print(f"Unknown extension for {sub_safe_filename}, uploaded without processing.")
+
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        await update_log_status(client_code, original_filename, timestamp, "In Review", batch_id=batch_id)
+
+    except Exception as e:
+        print(f"ZIP Batch pipeline error: {str(e)}")
+        try:
+            await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e), batch_id=batch_id)
+        except Exception:
+            pass
+
+
+@app.post("/api/admin/batches/{batch_id}/deliver")
+async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
+    _check_admin(vaicore_admin)
+    try:
+        # 1. Fetch child items from logs
+        async with aiofiles.open("upload_log.json", "r") as f:
+            content = await f.read()
+        logs = json.loads(content)
+
+        batch_logs = [log for log in logs if log.get("batch_id") == batch_id and not log.get("is_batch")]
+        parent_log = next((log for log in logs if log.get("batch_id") == batch_id and log.get("is_batch")), None)
+
+        if not batch_logs:
+            raise HTTPException(status_code=404, detail="No files found in batch")
+
+        client_code = batch_logs[0]["client_code"]
+        project_id = os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
+
+        # 2. Trigger individual exports
+        exported_files = []
+        for log in batch_logs:
+            filename = log["filename"]
+            res = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
+            if res.get("status") == "success":
+                exported_files.append(res)
+
+        # 3. Compile a single ZIP file containing all exports
+        import zipfile
+        import io
+        
+        zip_buffer = io.BytesIO()
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            container_delivery = blob_service_client.get_container_client("client-delivery")
+            
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as z:
+                for res in exported_files:
+                    filename_in_container = res.get("xlsx_filename")
+                    if not filename_in_container:
+                        continue
+                    blob_name = f"{client_code}/{filename_in_container}"
+                    try:
+                        b_client = container_delivery.get_blob_client(blob_name)
+                        if await b_client.exists():
+                            blob_data = await b_client.download_blob()
+                            file_content = await blob_data.readall()
+                            z.writestr(filename_in_container, file_content)
+                    except Exception as ex:
+                        print(f"Failed to include {blob_name} in batch zip: {ex}")
+
+        # 4. Upload ZIP delivery back to Azure
+        batch_zip_name = f"{batch_id}_delivered.zip"
+        batch_blob_name = f"{client_code}/{batch_zip_name}"
+        
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            container_delivery = blob_service_client.get_container_client("client-delivery")
+            b_client = container_delivery.get_blob_client(batch_blob_name)
+            await b_client.upload_blob(zip_buffer.getvalue(), overwrite=True)
+
+        # 5. Update logs to Delivered
+        for log in logs:
+            if log.get("batch_id") == batch_id:
+                log["status"] = "Delivered"
+
+        async with aiofiles.open("upload_log.json", "w") as f:
+            await f.write(json.dumps(logs, indent=2))
+
+        # 6. Generate secure 72-hour SAS link
+        exported_filename = batch_zip_name
+        batch_blob_name = f"{client_code}/{exported_filename}"
+        sas_token = generate_blob_sas(
+            account_name=AZURE_STORAGE_ACCOUNT_NAME,
+            container_name="client-delivery",
+            blob_name=batch_blob_name,
+            account_key=AZURE_STORAGE_ACCOUNT_KEY,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.utcnow() + timedelta(hours=72),
+        )
+        download_url = f"https://{AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/client-delivery/{batch_blob_name}?{sas_token}"
+
+        return {
+            "success": True,
+            "message": f"Successfully packaged and delivered batch {batch_id}!",
+            "download_url": download_url,
+            "expires_in": "72 hours"
+        }
+    except Exception as e:
+        print(f"Error packaging batch delivery {batch_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/admin/batches/{batch_id}")
+async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
+    _check_admin(vaicore_admin)
+    try:
+        async with aiofiles.open("upload_log.json", "r") as f:
+            content = await f.read()
+        logs = json.loads(content)
+
+        deleted_filenames = []
+        deleted_sub_blobs = []
+        client_code = None
+
+        new_logs = []
+        for log in logs:
+            if log.get("batch_id") == batch_id:
+                deleted_filenames.append(log.get("filename"))
+                client_code = log.get("client_code")
+                if log.get("sub_blob_name"):
+                    deleted_sub_blobs.append(log.get("sub_blob_name"))
+                if log.get("is_batch"):
+                    deleted_sub_blobs.append(f"{client_code}/{log.get('timestamp')}_{log.get('filename')}")
+            else:
+                new_logs.append(log)
+
+        if not deleted_filenames:
+            raise HTTPException(status_code=404, detail="Batch not found")
+
+        async with aiofiles.open("upload_log.json", "w") as f:
+            await f.write(json.dumps(new_logs, indent=2))
+
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            container_intake = blob_service_client.get_container_client("client-intake")
+            container_processing = blob_service_client.get_container_client("processing")
+            container_delivery = blob_service_client.get_container_client("client-delivery")
+
+            for blob_name in deleted_sub_blobs:
+                try:
+                    b_client = container_intake.get_blob_client(blob_name)
+                    if await b_client.exists():
+                        await b_client.delete_blob()
+                        print(f"Deleted intake blob: {blob_name}")
+                except Exception as ex:
+                    print(f"Failed to delete intake blob {blob_name}: {ex}")
+
+            if client_code:
+                async for blob in container_intake.list_blobs(name_starts_with=f"{client_code}/batches/{batch_id}/"):
+                    try:
+                        await container_intake.delete_blob(blob.name)
+                        print(f"Deleted remaining intake blob: {blob.name}")
+                    except Exception:
+                        pass
+                
+                async for blob in container_processing.list_blobs(name_starts_with=f"{client_code}/"):
+                    if batch_id in blob.name:
+                        try:
+                            await container_processing.delete_blob(blob.name)
+                            print(f"Deleted processing blob: {blob.name}")
+                        except Exception:
+                            pass
+
+                async for blob in container_delivery.list_blobs(name_starts_with=f"{client_code}/"):
+                    if batch_id in blob.name:
+                        try:
+                            await container_delivery.delete_blob(blob.name)
+                            print(f"Deleted delivery blob: {blob.name}")
+                        except Exception:
+                            pass
+
+        return {"success": True, "message": f"Successfully deleted batch {batch_id} and all nested resources."}
+    except Exception as e:
+        print(f"Error deleting batch {batch_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/webhook/labelstudio")
@@ -672,24 +1664,11 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
 
     action = payload.get("action", "")
 
-    # Manual review workflow support
-    is_accepted = False
     annotation = payload.get("annotation", {})
     
-    if action in ("REVIEW_CREATED", "REVIEW_UPDATED"):
-        is_accepted = payload.get("review", {}).get("accepted", False)
-    elif action in ("ANNOTATION_UPDATED", "ANNOTATION_CREATED"):
-        # Check manual status choice in result for Community Edition workaround
-        result = annotation.get("result", [])
-        for r_item in result:
-            if r_item.get("from_name") == "review_status":
-                choices = r_item.get("value", {}).get("choices", [])
-                if "Accepted" in choices:
-                    is_accepted = True
-                break
-    
-    if not is_accepted:
-        return {"received": True, "action": "ignored", "reason": f"Status not accepted (Action: {action})"}
+    # Accept any completed annotation so the admin can deliver it
+    if action not in ("ANNOTATION_UPDATED", "ANNOTATION_CREATED", "REVIEW_CREATED", "REVIEW_UPDATED"):
+        return {"received": True, "action": "ignored", "reason": f"Action not supported: {action}"}
 
     # Task data contains client_code and filename set during push_to_labelstudio
     task = payload.get("task", {})

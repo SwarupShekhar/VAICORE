@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vaicore Data Platform</title>
+    <title>Vaicore — Project Manager Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <header>
-        <h1>Vaicore — <span id="client-name"></span> Portal</h1>
+        <h1>Vaicore — <span id="client-name"></span> <span style="opacity:0.5;font-size:0.75em;">Project Manager</span></h1>
         <button id="logout-btn" class="btn-secondary btn">Logout</button>
     </header>
 
     <div class="container">
         <!-- Upload Section -->
         <div class="card">
-            <h2>Upload Data Files</h2>
-            <p>Supported formats: Audio (MP3, WAV, M4A) | Documents (PDF, DOCX) | Images (JPG, PNG) | Data (CSV, JSON)</p>
+            <h2>Upload Data Files for Processing</h2>
+            <p>Upload files on behalf of your client. Supported formats: Audio (MP3, WAV, M4A) | Documents (PDF, DOCX) | Images (JPG, PNG) | Data (CSV, JSON)</p>
             <form id="upload-form">
                 <div class="drop-area" id="drop-area">
                     <p>Drag and drop files here or click to select</p>
@@ -32,7 +32,7 @@
 
         <!-- My Uploads Section -->
         <div class="card">
-            <h2>My Uploads</h2>
+            <h2>Processing Queue</h2>
             <table id="uploads-table">
                 <thead>
                     <tr>
@@ -185,14 +185,189 @@
                 uploadsTbody.innerHTML = '';
                 let needsPolling = false;
 
+                // Group intake by batch_id
+                const batches = {};
+                const singles = [];
+
                 for (const file of data.intake) {
+                    if (file.batch_id) {
+                        if (!batches[file.batch_id]) {
+                            batches[file.batch_id] = {
+                                parent: null,
+                                files: []
+                            };
+                        }
+                        if (file.is_batch) {
+                            batches[file.batch_id].parent = file;
+                        } else {
+                            batches[file.batch_id].files.push(file);
+                        }
+                    } else {
+                        singles.push(file);
+                    }
+                }
+
+                // Render ZIP Batches
+                for (const batchId in batches) {
+                    const b = batches[batchId];
+                    const parent = b.parent || { name: 'Batch Archive.zip', size: 0, uploaded_on: new Date().toISOString(), status: 'Processing' };
+                    
+                    const parentRow = document.createElement('tr');
+                    parentRow.className = 'batch-parent-row';
+                    parentRow.style.cursor = 'pointer';
+                    parentRow.style.background = 'rgba(255,255,255,0.02)';
+                    
+                    const fileType = 'ZIP BATCH';
+                    const sizeMB = (parent.size / (1024 * 1024)).toFixed(2) + ' MB';
+                    const uploadedOn = new Date(parent.uploaded_on).toLocaleDateString();
+                    
+                    let statusClass = 'status-uploaded';
+                    if (parent.status.includes('Transcribing')) statusClass = 'status-transcribing';
+                    if (parent.status.includes('Reviewing') || parent.status === 'In Review') statusClass = 'status-reviewing';
+                    if (parent.status === 'Completed' || parent.status === 'Delivered') statusClass = 'status-completed';
+                    if (parent.status.includes('Failed')) statusClass = 'status-failed';
+
+                    if (['Transcribing', 'Reviewing', 'Uploaded', 'In Review'].includes(parent.status)) {
+                        needsPolling = true;
+                    }
+
+                    // Let's gather statuses for all child files in parallel
+                    let totalSegments = 0;
+                    let completedAnnotations = 0;
+                    let childFilesLoading = b.files.length === 0;
+
+                    for (const f of b.files) {
+                        if (['Transcribing', 'Reviewing', 'Uploaded', 'In Review'].includes(f.status)) {
+                            needsPolling = true;
+                        }
+                        if (f.status === 'In Review' || f.status === 'Completed') {
+                            try {
+                                const statusResponse = await fetch(`/api/status/${clientCode}/${f.name}`);
+                                const statusData = await statusResponse.json();
+                                if (statusData.total_segments > 0) {
+                                    totalSegments += statusData.total_segments;
+                                    completedAnnotations += statusData.completed_annotations;
+                                }
+                            } catch (e) {
+                                console.error("Error status for", f.name, e);
+                            }
+                        }
+                    }
+
+                    let progressHtml = '';
+                    if (totalSegments > 0) {
+                        const compPercentage = Math.round((completedAnnotations / totalSegments) * 100);
+                        progressHtml = `
+                            <div class="progress-container" style="margin-top: 4px;">
+                                <span class="progress-text" style="font-size:0.72rem;">${completedAnnotations}/${totalSegments} labeled</span>
+                                <div class="mini-progress">
+                                    <div class="mini-progress-fill" style="width: ${compPercentage}%"></div>
+                                </div>
+                            </div>
+                        `;
+                    } else if (childFilesLoading) {
+                        progressHtml = `<div style="font-size:0.72rem; color:var(--grey)">Extracting zip...</div>`;
+                    } else {
+                        progressHtml = `<div style="font-size:0.72rem; color:var(--grey)">${b.files.length} child files queued</div>`;
+                    }
+
+                    parentRow.innerHTML = `
+                        <td><strong><span class="toggle-icon">▶</span> ${parent.name}</strong></td>
+                        <td><span style="font-size:0.8rem; letter-spacing:0.04em; color:var(--grey)">ZIP BATCH</span></td>
+                        <td>${sizeMB}</td>
+                        <td>${uploadedOn}</td>
+                        <td><span class="lang-badge">MULTILINGUAL</span></td>
+                        <td>
+                            <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 5px;">
+                                <span class="status-badge ${statusClass}">${parent.status}</span>
+                                ${progressHtml}
+                            </div>
+                        </td>
+                    `;
+                    uploadsTbody.appendChild(parentRow);
+
+                    // Child rows
+                    const childContainerRow = document.createElement('tr');
+                    childContainerRow.className = 'batch-child-row-container';
+                    childContainerRow.style.display = 'none'; // hidden by default
+                    
+                    const childCell = document.createElement('td');
+                    childCell.colSpan = 6;
+                    childCell.style.padding = '0px 20px 15px 40px';
+                    childCell.style.background = 'rgba(0,0,0,0.2)';
+                    
+                    const childTable = document.createElement('table');
+                    childTable.className = 'client-table';
+                    childTable.style.width = '100%';
+                    childTable.style.marginTop = '10px';
+                    childTable.style.borderCollapse = 'collapse';
+                    childTable.innerHTML = `
+                        <thead>
+                            <tr style="background: rgba(255,255,255,0.01);">
+                                <th style="font-size:0.75rem; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.05);">Child File</th>
+                                <th style="font-size:0.75rem; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.05);">Type</th>
+                                <th style="font-size:0.75rem; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.05);">Language</th>
+                                <th style="font-size:0.75rem; padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.05);">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    `;
+                    
+                    const subTbody = childTable.querySelector('tbody');
+                    if (b.files.length === 0) {
+                        subTbody.innerHTML = `<tr><td colspan="4" class="empty-state" style="padding:15px; font-size:0.8rem;">Extracting batch files...</td></tr>`;
+                    } else {
+                        b.files.forEach(f => {
+                            const subTr = document.createElement('tr');
+                            subTr.style.background = 'transparent';
+                            const subType = f.name.split('.').pop().toUpperCase();
+                            
+                            let subStatusClass = 'status-uploaded';
+                            if (f.status.includes('Transcribing')) subStatusClass = 'status-transcribing';
+                            if (f.status.includes('Reviewing') || f.status === 'In Review') subStatusClass = 'status-reviewing';
+                            if (f.status === 'Completed') subStatusClass = 'status-completed';
+                            if (f.status.includes('Failed')) subStatusClass = 'status-failed';
+
+                            const subLangClass = f.language !== "Detecting..." ? "lang-detected" : "";
+                            const subTranscriptBtn = f.transcript_available ?
+                                `<button class="btn-small btn-secondary" style="padding: 2px 8px; font-size:0.7rem; margin-top:2px" onclick="viewTranscript('${f.full_name}', '${f.name}')">View Transcript</button>` : '';
+
+                            subTr.innerHTML = `
+                                <td style="font-size:0.8rem; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03);">${f.name}</td>
+                                <td style="font-size:0.8rem; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03); color:var(--grey)">${subType}</td>
+                                <td style="font-size:0.8rem; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03);"><span class="lang-badge ${subLangClass}" style="font-size:0.7rem; padding:2px 6px;">${f.language}</span></td>
+                                <td style="font-size:0.8rem; padding:8px 10px; border-bottom:1px solid rgba(255,255,255,0.03);">
+                                    <div style="display:flex; flex-direction:column; align-items:flex-start; gap:2px;">
+                                        <span class="status-badge ${subStatusClass}" style="font-size:0.7rem; padding:2px 6px;">${f.status}</span>
+                                        ${subTranscriptBtn}
+                                    </div>
+                                </td>
+                            `;
+                            subTbody.appendChild(subTr);
+                        });
+                    }
+                    
+                    childCell.appendChild(childTable);
+                    childContainerRow.appendChild(childCell);
+                    uploadsTbody.appendChild(childContainerRow);
+                    
+                    // Toggle logic
+                    parentRow.onclick = () => {
+                        const isClosed = childContainerRow.style.display === 'none';
+                        childContainerRow.style.display = isClosed ? 'table-row' : 'none';
+                        parentRow.querySelector('.toggle-icon').textContent = isClosed ? '▼' : '▶';
+                    };
+                }
+
+                // Render singles
+                for (const file of singles) {
                     const row = document.createElement('tr');
                     const fileType = file.name.split('.').pop().toUpperCase();
                     const sizeMB = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
                     const uploadedOn = new Date(file.uploaded_on).toLocaleDateString();
                     const language = file.language || "Detecting...";
                     const langClass = language !== "Detecting..." ? "lang-detected" : "";
-
+ 
                     let statusClass = 'status-uploaded';
                     if (file.status.includes('Transcribing')) statusClass = 'status-transcribing';
                     if (file.status.includes('Reviewing') || file.status === 'In Review') statusClass = 'status-reviewing';
@@ -216,7 +391,6 @@
                                         <div class="mini-progress">
                                             <div class="mini-progress-fill" style="width: ${statusData.completion_percentage}%"></div>
                                         </div>
-                                        ${isFinished ? `<button class="btn-small" style="margin-top:10px" onclick="finalizeExport('${file.name}')">Finalize & Deliver</button>` : ''}
                                     </div>
                                 `;
                                 if (isFinished && file.status !== 'Completed') {
