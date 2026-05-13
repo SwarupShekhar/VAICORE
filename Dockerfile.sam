@@ -10,11 +10,16 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install label-studio-ml and SAM dependencies
+# Step 1: Install torch CPU-only FIRST (separate from other packages)
 RUN pip install --no-cache-dir \
-    label-studio-ml \
+    torch==2.1.0 \
+    torchvision==0.16.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Step 2: Install remaining dependencies
+RUN pip install --no-cache-dir \
+    label-studio-ml==1.0.9 \
     label-studio-sdk \
-    torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     mobile-sam \
     Pillow \
     numpy \
@@ -22,11 +27,6 @@ RUN pip install --no-cache-dir \
 
 # Create model directory
 RUN mkdir -p /data/models
-
-# Download MobileSAM weights
-RUN wget -q -O /data/models/mobile_sam.pt \
-    https://github.com/ChaoningZhang/MobileSAM/raw/master/weights/mobile_sam.pt || \
-    echo "Will download on first run"
 
 # Copy the SAM backend script
 COPY sam_backend.py /app/sam_backend.py
