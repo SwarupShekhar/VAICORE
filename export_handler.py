@@ -117,7 +117,7 @@ def export_and_deliver(
                         else:
                             tr = requests.get(
                                 f"{ls_url}/api/tasks",
-                                params={"project": pid, "page_size": 1000},
+                                params={"project": pid, "page_size": 1000, "expand": "annotations"},
                                 headers=headers,
                                 timeout=20
                             )
@@ -155,7 +155,7 @@ def export_and_deliver(
         annotators = set()
         languages = set()
 
-        is_audio = str(project_id) == os.getenv("LABEL_STUDIO_AUDIO_PROJECT_ID", "1")
+        is_audio = str(project_id) == os.getenv("LABEL_STUDIO_PROJECT_ID", "1")
         is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
         is_form = str(project_id) == os.getenv("LABEL_STUDIO_FORM_PROJECT_ID", "3")
         is_clickstream = str(project_id) == os.getenv("LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
