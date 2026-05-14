@@ -234,7 +234,7 @@
 
         /* Delivery selection toolbar */
         .delivery-toolbar {
-            display: none;
+            display: flex;
             align-items: center;
             justify-content: space-between;
             background: rgba(197,232,77,0.07);
@@ -244,7 +244,6 @@
             margin-bottom: 14px;
             gap: 12px;
         }
-        .delivery-toolbar.visible { display: flex; }
         .delivery-toolbar .sel-count { font-size: 0.85rem; color: var(--accent-color); font-weight: bold; }
         .btn-package {
             background: var(--accent-color);
@@ -494,7 +493,7 @@
         }
 
         // Render client accordions
-        Object.keys(clientsGroup).forEach(clientCode => {
+        Object.keys(clientsGroup).forEach((clientCode, clientIdx) => {
             const clientData = clientsGroup[clientCode];
             
             const clientSection = document.createElement('div');
@@ -518,7 +517,11 @@
             clientContent.className = 'client-acc-content';
             clientContent.id = `content-client-${clientCode}`;
             
-            const isClientOpen = window.accordionOpenStates && window.accordionOpenStates[clientContent.id];
+            let isClientOpen = window.accordionOpenStates && window.accordionOpenStates[clientContent.id];
+            if (window.accordionOpenStates && window.accordionOpenStates[clientContent.id] === undefined && clientIdx === 0) {
+                isClientOpen = true;
+                window.accordionOpenStates[clientContent.id] = true;
+            }
             clientContent.style.display = isClientOpen ? 'block' : 'none';
             // chevron is inside clientHeader (not yet in DOM) — use querySelector
             const clientChevron = clientHeader.querySelector('.chevron');
@@ -644,9 +647,9 @@
                 toolbar.innerHTML = `
                     <div style="display:flex;align-items:center;gap:10px;">
                         <span class="sel-count" id="sel-count-${esc(clientCode)}">0 files selected</span>
-                        <span style="color:var(--grey);font-size:0.8rem;">— select completed files below to package into a client delivery ZIP</span>
+                        <span style="color:var(--grey);font-size:0.8rem;">— check completed files below to package into a delivery ZIP</span>
                     </div>
-                    <button class="btn-package" id="pkg-btn-${esc(clientCode)}" onclick="packageSelectedForDelivery('${esc(clientCode)}')">📦 Package &amp; Deliver Selected</button>
+                    <button class="btn-package" id="pkg-btn-${esc(clientCode)}" disabled onclick="packageSelectedForDelivery('${esc(clientCode)}')">📦 Package &amp; Deliver Selected</button>
                 `;
                 singlesWrapper.appendChild(toolbar);
 
@@ -656,7 +659,7 @@
                 table.innerHTML = `
                     <thead>
                         <tr>
-                            <th style="width:28px;"></th>
+                            <th style="width:28px;"><input type="checkbox" title="Select all completed" onchange="selectAllCompleted(this, '${esc(clientCode)}')"></th>
                             <th>File Name</th>
                             <th>Status</th>
                             <th>Progress</th>
@@ -710,10 +713,17 @@
         });
     }
 
+    // ── Select All Completed Helper ────────────────────────────
+    function selectAllCompleted(sourceEl, clientCode) {
+        document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]`).forEach(cb => {
+            cb.checked = sourceEl.checked;
+        });
+        updateSelectionToolbar(clientCode);
+    }
+
     // ── Selection toolbar update ───────────────────────────────
     function updateSelectionToolbar(clientCode) {
         const checks = document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]:checked`);
-        const toolbar = document.getElementById(`toolbar-${clientCode}`);
         const counter = document.getElementById(`sel-count-${clientCode}`);
         const pkgBtn = document.getElementById(`pkg-btn-${clientCode}`);
         const count = checks.length;
@@ -724,11 +734,11 @@
         });
 
         if (count > 0) {
-            toolbar.classList.add('visible');
             counter.textContent = `${count} file${count > 1 ? 's' : ''} selected`;
-            pkgBtn.disabled = false;
+            if (pkgBtn) pkgBtn.disabled = false;
         } else {
-            toolbar.classList.remove('visible');
+            counter.textContent = `0 files selected`;
+            if (pkgBtn) pkgBtn.disabled = true;
         }
     }
 
