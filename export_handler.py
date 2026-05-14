@@ -79,34 +79,41 @@ def export_and_deliver(
                 matched_tasks = [r.json()]
         
         if not matched_tasks:
-            print(f"Fetching tasks for project {project_id} and filtering...")
-            r = requests.get(
-                f"{ls_url}/api/tasks",
-                params={"project": project_id, "page_size": 1000},
-                headers=headers,
-                timeout=30
-            )
-            r.raise_for_status()
-            resp = r.json()
-            all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
+            project_ids_to_check = [str(project_id)]
+            for pid in ["1", "2", "3", "4", "5", "6"]:
+                if pid not in project_ids_to_check:
+                    project_ids_to_check.append(pid)
 
-            # The list endpoint does NOT include annotations — only IDs.
-            # Find matching tasks by client_code/filename first, then fetch
-            # each individually to get full annotation data.
-            candidate_ids = [
-                t["id"] for t in all_tasks
-                if t.get("data", {}).get("client_code") == client_code
-                and t.get("data", {}).get("filename") == original_filename
-                and t.get("total_annotations", 0) > 0
-            ]
-            print(f"Found {len(candidate_ids)} candidate task IDs: {candidate_ids}")
-
-            for tid in candidate_ids:
-                tr = requests.get(f"{ls_url}/api/tasks/{tid}", headers=headers, timeout=15)
-                if tr.status_code == 200:
-                    full_task = tr.json()
-                    if len(full_task.get("annotations", [])) > 0:
-                        matched_tasks.append(full_task)
+            for pid in project_ids_to_check:
+                try:
+                    print(f"Fetching tasks for project {pid} and filtering...")
+                    r = requests.get(
+                        f"{ls_url}/api/tasks",
+                        params={"project": pid, "page_size": 1000},
+                        headers=headers,
+                        timeout=15
+                    )
+                    if r.status_code == 200:
+                        resp = r.json()
+                        all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
+                        candidate_ids = [
+                            t["id"] for t in all_tasks
+                            if t.get("data", {}).get("client_code") == client_code
+                            and t.get("data", {}).get("filename") == original_filename
+                            and t.get("total_annotations", 0) > 0
+                        ]
+                        if candidate_ids:
+                            print(f"Found {len(candidate_ids)} candidate task IDs in project {pid}: {candidate_ids}")
+                            project_id = pid
+                            for tid in candidate_ids:
+                                tr = requests.get(f"{ls_url}/api/tasks/{tid}", headers=headers, timeout=15)
+                                if tr.status_code == 200:
+                                    full_task = tr.json()
+                                    if len(full_task.get("annotations", [])) > 0:
+                                        matched_tasks.append(full_task)
+                            break
+                except Exception as ex:
+                    print(f"Error checking project {pid}: {ex}")
 
         if not matched_tasks:
             print(f"No annotated tasks found for {client_code}/{original_filename}")
@@ -135,8 +142,8 @@ def export_and_deliver(
 
                 # For Audio Project, enforce manual review status. For Jewelry, accept all non-cancelled.
                 is_jewelry = str(project_id) == os.getenv("LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
-                is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "3")
-                is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "4")
+                is_housing = str(project_id) == os.getenv("LABEL_STUDIO_HOUSING_PROJECT_ID", "5")
+                is_business = str(project_id) == os.getenv("LABEL_STUDIO_BUSINESS_PROJECT_ID", "6")
                 is_image_project = is_jewelry or is_housing or is_business
                 
                 if not is_image_project:
@@ -612,31 +619,42 @@ def check_annotation_status(
     original_filename: str = None,
 ) -> Dict[str, Any]:
     """
-    Check the annotation status for a client (or specific file) in Label Studio.
+    Check the annotation status for a client (or specific file) in Label Studio across all project IDs.
     """
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         headers = _get_ls_headers()
 
-        print(f"Checking status for project {project_id}, client {client_code}...")
-        r = requests.get(
-            f"{ls_url}/api/tasks",
-            params={"project": project_id, "page_size": 1000},
-            headers=headers,
-            timeout=30
-        )
-        r.raise_for_status()
-        resp = r.json()
-        all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
+        project_ids_to_check = [str(project_id)]
+        for pid in ["1", "2", "3", "4", "5", "6"]:
+            if pid not in project_ids_to_check:
+                project_ids_to_check.append(pid)
 
-        def _get_data(t, key):
-            return t.get("data", {}).get(key)
+        filtered_tasks = []
+        actual_pid = project_id
 
-        filtered_tasks = [
-            t for t in all_tasks
-            if _get_data(t, "client_code") == client_code
-            and (original_filename is None or _get_data(t, "filename") == original_filename)
-        ]
+        for pid in project_ids_to_check:
+            try:
+                r = requests.get(
+                    f"{ls_url}/api/tasks",
+                    params={"project": pid, "page_size": 1000},
+                    headers=headers,
+                    timeout=15
+                )
+                if r.status_code == 200:
+                    resp = r.json()
+                    all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
+                    tasks_for_file = [
+                        t for t in all_tasks
+                        if t.get("data", {}).get("client_code") == client_code
+                        and (original_filename is None or t.get("data", {}).get("filename") == original_filename)
+                    ]
+                    if tasks_for_file:
+                        filtered_tasks = tasks_for_file
+                        actual_pid = pid
+                        break
+            except Exception:
+                pass
 
         total = len(filtered_tasks)
         completed = sum(1 for t in filtered_tasks if t.get("total_annotations", 0) > 0)
@@ -648,6 +666,7 @@ def check_annotation_status(
             "completed_annotations": completed,
             "pending_annotations": total - completed,
             "completion_percentage": round((completed / total * 100), 1) if total > 0 else 0,
+            "project_id": actual_pid,
         }
 
     except Exception as e:
