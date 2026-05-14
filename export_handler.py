@@ -86,31 +86,24 @@ def export_and_deliver(
 
             for pid in project_ids_to_check:
                 try:
-                    print(f"Fetching tasks for project {pid} and filtering...")
+                    print(f"Fetching bulk JSON export for project {pid}...")
                     r = requests.get(
-                        f"{ls_url}/api/tasks",
-                        params={"project": pid, "page_size": 1000},
+                        f"{ls_url}/api/projects/{pid}/export?exportType=JSON",
                         headers=headers,
-                        timeout=15
+                        timeout=20
                     )
                     if r.status_code == 200:
-                        resp = r.json()
-                        all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
-                        candidate_ids = [
-                            t["id"] for t in all_tasks
+                        all_tasks = r.json()
+                        matched = [
+                            t for t in all_tasks
                             if t.get("data", {}).get("client_code") == client_code
                             and t.get("data", {}).get("filename") == original_filename
-                            and t.get("total_annotations", 0) > 0
+                            and len(t.get("annotations", [])) > 0
                         ]
-                        if candidate_ids:
-                            print(f"Found {len(candidate_ids)} candidate task IDs in project {pid}: {candidate_ids}")
+                        if matched:
+                            print(f"Found {len(matched)} annotated tasks via bulk export in project {pid}")
+                            matched_tasks = matched
                             project_id = pid
-                            for tid in candidate_ids:
-                                tr = requests.get(f"{ls_url}/api/tasks/{tid}", headers=headers, timeout=15)
-                                if tr.status_code == 200:
-                                    full_task = tr.json()
-                                    if len(full_task.get("annotations", [])) > 0:
-                                        matched_tasks.append(full_task)
                             break
                 except Exception as ex:
                     print(f"Error checking project {pid}: {ex}")
