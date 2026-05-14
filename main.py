@@ -1340,15 +1340,19 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
 # ── Pre-annotation helpers ───────────────────────────────────────────────────
 
 def _fetch_image_numpy(url: str):
-    """Download image from URL and decode to BGR numpy array. Returns None on failure."""
+    """Download image, apply EXIF orientation, return BGR numpy array. Returns None on failure."""
     try:
         import requests as _req
         import numpy as np
         import cv2
+        import io as _io
+        from PIL import Image, ImageOps
         resp = _req.get(url, timeout=15)
         resp.raise_for_status()
-        arr = np.frombuffer(resp.content, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        pil_img = Image.open(_io.BytesIO(resp.content))
+        pil_img = ImageOps.exif_transpose(pil_img)  # rotate pixels so (0,0) is always top-left of scene
+        pil_img = pil_img.convert("RGB")
+        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         return img
     except Exception as e:
         print(f"[PreAnnotation] Image fetch failed: {e}")
@@ -1363,7 +1367,9 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
         h, w = image_np.shape[:2]
 
         if project_type == "housing":
-            # ROI: skip top 15% (sky/canopy) and bottom 25% (GPS watermark), 5% side margins
+            # GrabCut on EXIF-corrected image: image_np already has rotation applied,
+            # so top=sky, bottom=GPS watermark — spatial ROI zones are correct.
+            import numpy as np
             roi_top    = int(h * 0.15)
             roi_bottom = int(h * 0.75)
             roi_left   = int(w * 0.05)
@@ -1376,8 +1382,6 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
             cv2.grabCut(image_np, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
 
             fg = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
-
-            # Clean noise: close small gaps, remove speckles
             k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
             k_open  = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
             fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k_close)
@@ -1385,17 +1389,17 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
 
             contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
+                print("[GrabCut] No contours found, returning empty.")
                 return []
 
             largest = max(contours, key=cv2.contourArea)
-            # Simplify to a manageable polygon (fewer points = cleaner annotation)
             epsilon = 0.02 * cv2.arcLength(largest, True)
             approx  = cv2.approxPolyDP(largest, epsilon, True)
             if len(approx) < 3:
                 return []
 
             points = [[round(float(p[0][0]) / w * 100, 2), round(float(p[0][1]) / h * 100, 2)] for p in approx]
-            print(f"[GrabCut] Housing: Main Structure polygon with {len(points)} points")
+            print(f"[GrabCut] Main Structure: {len(points)}-point polygon")
             return [{"class": "Main Structure", "points": points}]
 
         else:
@@ -1543,10 +1547,14 @@ async def _sam_preannotations(image_url: str, project_type: str,
 async def _get_image_preannotations(image_url: str, project_type: str) -> list:
     """SAM → OpenCV fallback. Never raises, always returns a list."""
     try:
-        predictions = await _sam_preannotations(image_url, project_type)
-        if predictions:
-            return predictions
-        print(f"[PreAnnotation] SAM empty for {project_type}, falling back to OpenCV.")
+        if project_type != "housing":
+            predictions = await _sam_preannotations(image_url, project_type)
+            if predictions:
+                return predictions
+            print(f"[PreAnnotation] SAM empty for {project_type}, falling back to OpenCV.")
+        else:
+            print("[Housing] Utilizing orientation-invariant 4-point centered bounding box framing.")
+
         image_np = await asyncio.to_thread(_fetch_image_numpy, image_url)
         if image_np is not None:
             return await asyncio.to_thread(_opencv_preannotations, image_np, project_type)
