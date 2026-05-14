@@ -993,29 +993,73 @@ async def admin_logout():
 async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            content = await f.read()
-        logs = json.loads(content)
-        
+        logs = []
+        try:
+            async with aiofiles.open("upload_log.json", "r") as f:
+                content = await f.read()
+            logs = json.loads(content)
+        except Exception:
+            logs = []
+
+        # Keep a tracking map to avoid duplicates
+        existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
+
+        try:
+            async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+                container_client_intake = blob_service_client.get_container_client("client-intake")
+                async for blob in container_client_intake.list_blobs():
+                    parts = blob.name.split("/")
+                    if len(parts) >= 2:
+                        client_code = parts[0]
+                        full_name = parts[1]
+                        sub_parts = full_name.split("_", 2)
+                        original_name = sub_parts[2] if len(sub_parts) >= 3 else full_name
+                        timestamp = f"{sub_parts[0]}_{sub_parts[1]}" if len(sub_parts) >= 3 else "20260501_120000"
+                        
+                        if (client_code, original_name) not in existing:
+                            existing.add((client_code, original_name))
+                            logs.append({
+                                "client_code": client_code,
+                                "filename": original_name,
+                                "timestamp": timestamp,
+                                "status": "In Review",
+                                "category": "auto"
+                            })
+        except Exception as blob_err:
+            print(f"Admin pipeline blob sync error: {blob_err}")
+
         # Sort logs by timestamp descending
         logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         
-        # Limit to last 50 for performance
+        # Save recovered logs back to disk so it stays in sync
+        try:
+            async with aiofiles.open("upload_log.json", "w") as f:
+                await f.write(json.dumps(logs, indent=2))
+        except Exception:
+            pass
+        
         pipeline = []
         for entry in logs[:200]:
             client_code = entry.get("client_code")
             filename = entry.get("filename")
-            status = entry.get("status")
+            status = entry.get("status", "Received")
             
-            # Check LS status if it's in review
             completion = 0
-            if status in ("In Review", "Completed", "Review Finished"):
+            if status != "Delivered":
                 try:
                     project_id = get_project_id_for_file(client_code, filename)
                     ls_status = await asyncio.to_thread(
                         check_annotation_status, client_code, project_id, filename
                     )
                     completion = ls_status.get("completion_percentage", 0)
+                    total_ann = ls_status.get("completed_annotations", 0)
+                    total_seg = ls_status.get("total_segments", 0)
+                    
+                    if total_seg > 0:
+                        if completion == 100 or total_ann == total_seg:
+                            status = "Completed"
+                        elif total_ann > 0 or status in ("Uploaded", "Received", "Processing"):
+                            status = "In Review"
                 except Exception:
                     pass
             
