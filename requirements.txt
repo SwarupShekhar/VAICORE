@@ -15,3 +15,4 @@ requests
 httpx
 opencv-python-headless
 numpy
+Pillow
