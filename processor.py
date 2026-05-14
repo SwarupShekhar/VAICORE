@@ -91,7 +91,7 @@ def filter_segment(text: str, avg_logprob: float) -> bool:
     if not text or len(text.strip()) == 0:
         return False
     # Relaxed filter: Allow short words like 'Ok', 'Ji', 'Yes'
-    if avg_logprob < -1.5: # Hard filter only on extremely low quality
+    if avg_logprob is not None and avg_logprob < -1.5: # Hard filter only on extremely low quality
         return False
     return True
 
@@ -187,19 +187,18 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             max_retries = 3
             last_error = None
             response = None
-            mode = "PRIMARY (gpt-4o-diarize)"
+            mode = "PRIMARY (whisper-1)"
             
             print(f"Mode: {mode}")
             for attempt in range(max_retries):
                 try:
                     with open(local_audio_path, "rb") as f:
-                        # ENGINE 1: OpenAI High-Precision (Diarized)
+                        # ENGINE 1: OpenAI Whisper (Stable & Fast)
                         response = client.audio.transcriptions.create(
                             file=f,
-                            model="gpt-4o-transcribe-diarize",
-                            response_format="diarized_json",
-                            language=language,
-                            chunking_strategy="auto"
+                            model="whisper-1",
+                            response_format="verbose_json",
+                            language=language if language else None
                         )
                     break
                 except Exception as e:
@@ -208,45 +207,31 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     if attempt < max_retries - 1:
                         time.sleep(3 * (attempt + 1))
                     else:
+                        print(f"Whisper-1 failed: {e}. Attempting LOCAL FALLBACK (faster-whisper)...")
+                        mode = "LOCAL (faster-whisper)"
                         try:
-                            print("PRIMARY failed. Trying STABLE FALLBACK (whisper-1)...")
-                            mode = "FALLBACK (whisper-1)"
-                            with open(local_audio_path, "rb") as audio_file:
-                                response = client.audio.transcriptions.create(
-                                    model="whisper-1",
-                                    file=audio_file,
-                                    language=language if language else None,
-                                    response_format="verbose_json"
-                                )
-                        except Exception as fe:
-                            print(f"Whisper-1 also failed: {fe}. Attempting LOCAL FALLBACK (faster-whisper)...")
-                            mode = "LOCAL (faster-whisper)"
-                            try:
-                                from faster_whisper import WhisperModel
-                                # Using SMALL model for much better accuracy than BASE
-                                print("Loading 'small' model for high-accuracy local fallback...")
-                                local_model = WhisperModel("small", device="cpu", compute_type="int8")
-                                segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language)
-                                
-                                # Convert generator to list of dicts to match OpenAI format
-                                local_segments = []
-                                for s in segments:
-                                    local_segments.append({
-                                        'start': s.start,
-                                        'end': s.end,
-                                        'text': s.text,
-                                        'avg_logprob': s.avg_logprob
-                                    })
-                                
-                                # Create a mock response object
-                                class MockResponse:
-                                    def __init__(self, segments, lang):
-                                        self.segments = segments
-                                        self.language = lang
-                                
-                                response = MockResponse(local_segments, info.language)
-                            except Exception as local_e:
-                                raise Exception(f"Ultimate failure: Local fallback failed too. Error: {local_e}")
+                            from faster_whisper import WhisperModel
+                            print("Loading 'small' model for high-accuracy local fallback...")
+                            local_model = WhisperModel("small", device="cpu", compute_type="int8")
+                            segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language)
+                            
+                            local_segments = []
+                            for s in segments:
+                                local_segments.append({
+                                    'start': s.start,
+                                    'end': s.end,
+                                    'text': s.text,
+                                    'avg_logprob': s.avg_logprob
+                                })
+                            
+                            class MockResponse:
+                                def __init__(self, segments, lang):
+                                    self.segments = segments
+                                    self.language = lang
+                            
+                            response = MockResponse(local_segments, info.language)
+                        except Exception as local_e:
+                            raise Exception(f"Ultimate failure: Local fallback failed too. Error: {local_e}")
             
             print(f"Transcription logic finished using {mode}")
             
@@ -254,47 +239,30 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             raw_segments = getattr(response, 'segments', [])
             temp_segments = []
             
-            # STEP 3: Unified Segment Processing
-            if mode == "PRIMARY (gpt-4o-diarize)":
-                for s in raw_segments:
-                    is_dict = isinstance(s, dict)
-                    text = s.get('text', '').strip() if is_dict else s.text.strip()
-                    speaker = s.get('speaker', 'Unknown') if is_dict else getattr(s, 'speaker', 'Unknown')
-                    start = s.get('start', 0) if is_dict else s.start
-                    end = s.get('end', 0) if is_dict else s.end
-                    avg_logprob = s.get('avg_logprob', 0) if is_dict else getattr(s, 'avg_logprob', 0)
-                    
-                    if filter_segment(text, avg_logprob):
-                        temp_segments.append({
-                            "start": start, "end": end, "text": text, 
-                            "speaker": speaker, "avg_logprob": avg_logprob
-                        })
+            # STEP 3: Unified Segment Processing & Gap-based Diarization
+            current_speaker = "Speaker A"
+            last_end_time = 0
+            for s in raw_segments:
+                is_dict = isinstance(s, dict)
+                text = s.get('text', '').strip() if is_dict else s.text.strip()
+                start = s.get('start', 0) if is_dict else s.start
+                end = s.get('end', 0) if is_dict else s.end
+                avg_logprob = s.get('avg_logprob', 0.0) if is_dict else getattr(s, 'avg_logprob', 0.0)
+                if avg_logprob is None:
+                    avg_logprob = 0.0
                 
-                # Identify roles for Primary mode
-                role_mapping = identify_speaker_roles(temp_segments, client_code)
-            else:
-                # FALLBACK MODE: Gap-based best-effort diarization
-                current_speaker = "Speaker A"
-                last_end_time = 0
-                for s in raw_segments:
-                    is_dict = isinstance(s, dict)
-                    text = s.get('text', '').strip() if is_dict else s.text.strip()
-                    start = s.get('start', 0) if is_dict else s.start
-                    end = s.get('end', 0) if is_dict else s.end
-                    avg_logprob = s.get('avg_logprob', 0) if is_dict else getattr(s, 'avg_logprob', 0)
-                    
-                    if start - last_end_time > 1.2:
-                        current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
-                    
-                    if filter_segment(text, avg_logprob):
-                        temp_segments.append({
-                            "start": start, "end": end, "text": text, 
-                            "speaker": current_speaker, "avg_logprob": avg_logprob
-                        })
-                    last_end_time = end
+                if start - last_end_time > 1.2:
+                    current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
                 
-                # In fallback, map A/B to Speaker 1/2
-                role_mapping = {"Speaker A": "Speaker 1", "Speaker B": "Speaker 2"}
+                if filter_segment(text, avg_logprob):
+                    temp_segments.append({
+                        "start": start, "end": end, "text": text, 
+                        "speaker": current_speaker, "avg_logprob": avg_logprob
+                    })
+                last_end_time = end
+            
+            # AI Speaker Role Mapping
+            role_mapping = identify_speaker_roles(temp_segments, client_code)
             
             # STEP 5: Final Enrichment and Role Mapping
             processed_segments = []

@@ -124,168 +124,152 @@ def parse_time_string(ts_str: str) -> datetime:
 
 def analyze_timeline_friction(events: list) -> list:
     """
-    Executes behavioral analysis heuristics over clickstream sequence events:
-    - Rage Click Detection: consecutive clicks on the exact same element within <= 1.0 second.
-    - Navigation Friction Loops: Catalog -> Cart -> Catalog -> Cart bouncing patterns.
-    - Active Error Encountering: highlighting system or business errors.
-    - Speed/Network/UI Latency: flagging unusually long delays (>15s) in interactive paths.
-    - Dropout Risk: evaluating if the customer quit immediately after severe friction.
+    Groups events by CT_SESSION_ID, detects real app-analytics friction signals.
+    Returns one session dict per CT_SESSION_ID — each becomes one Label Studio task.
     """
-    analyzed_timeline = []
-    
-    # Ensure keys exist and handle both custom tab-separated schema and standard formats
-    standardized_events = []
-    for index, ev in enumerate(events):
-        event_params = {}
-        raw_params = ev.get("EVENT_PARAMS") or ev.get("event_params")
-        if raw_params:
-            if isinstance(raw_params, dict):
-                event_params = raw_params
-            elif isinstance(raw_params, str):
-                try:
-                    event_params = json.loads(raw_params)
-                except Exception:
-                    pass
+    # Group by CT_SESSION_ID
+    sessions_map = {}
+    session_order = []
+    for ev in events:
+        sid = str(ev.get("CT_SESSION_ID") or ev.get("ct_session_id") or "SINGLE_SESSION")
+        if sid not in sessions_map:
+            sessions_map[sid] = []
+            session_order.append(sid)
+        sessions_map[sid].append(ev)
 
-        # 1. Resolve date / timestamp
-        raw_date = ev.get("DATE") or ev.get("date") or ev.get("DL_MODIFIED_DATE") or ev.get("timestamp") or ev.get("time")
-        timestamp_str = ""
-        if raw_date:
-            timestamp_str = str(raw_date).strip()
-            # If full date/timestamp, extract HH:MM:SS part for clean display
-            match = re.search(r'(\d{1,2}:\d{2}:\d{2})', timestamp_str)
-            if match:
-                timestamp_str = match.group(1)
-        if not timestamp_str:
-            timestamp_str = f"00:00:{index:02d}"
+    result = []
 
-        # 2. Resolve page/screen name
-        page = (
-            event_params.get("EP_PAGE_NAME") or 
-            event_params.get("EP_PAGE_URL") or 
-            ev.get("page") or 
-            ev.get("url") or 
-            "HOMEPAGE"
-        )
-        if page == "NA" or not page:
-            page = "HOMEPAGE"
+    for session_id in session_order:
+        raw_events = sessions_map[session_id]
+        first = raw_events[0]
 
-        # 3. Resolve event action
-        action = ev.get("EVENTNAME") or ev.get("eventname") or ev.get("action") or ev.get("event") or "Click"
+        # Device / user metadata from first event
+        make = str(first.get("Make") or first.get("make") or "")
+        model = str(first.get("Model") or first.get("model") or "")
+        device = f"{make} {model}".strip()
+        if not device or device.lower() in ("null null", "null"):
+            device = "Unknown Device"
+        user_type = str(first.get("EP_USER_TYPE") or "Unknown")
+        app_version = str(first.get("AppVersion") or first.get("CT App Version") or "")
+        platform = str(first.get("PLATFORM") or "Mobile")
 
-        # 4. Resolve interaction target element
-        element = (
-            event_params.get("EP_SOURCE") or 
-            event_params.get("EP_LAST_CLICK") or 
-            event_params.get("EP_BANNER_PERSONALIZATION") or 
-            ev.get("element") or 
-            ev.get("target") or 
-            "System"
-        )
-        if isinstance(element, str):
-            if element.startswith("{value:") and element.endswith("}"):
-                element = element[7:-1]
-            if element == "NA" or not element:
-                element = "System"
+        formatted_events = []
+        friction_signals = set()
+        page_visit_counts = {}
 
-        # 5. Extract metadata fields
-        platform = ev.get("PLATFORM") or ev.get("platform") or event_params.get("EP_PLATFORM") or "Mobile"
-        carrier = event_params.get("EP_NETWORK_CARRIER") or "Unknown Carrier"
-        net_type = event_params.get("EP_NETWORK_TYPE") or "Unknown Network"
-        
-        make = ev.get("Make") or ev.get("make") or ""
-        model = ev.get("Model") or ev.get("model") or ""
-        handset = f"{make} {model}".strip()
-        if not handset or handset.lower() == "null null" or handset.lower() == "null":
-            handset = event_params.get("HANDSET") or "Unknown Handset"
+        for i, ev in enumerate(raw_events):
+            # Parse EVENT_PARAMS JSON blob
+            event_params = {}
+            raw_params = ev.get("EVENT_PARAMS") or ev.get("event_params")
+            if raw_params:
+                if isinstance(raw_params, dict):
+                    event_params = raw_params
+                elif isinstance(raw_params, str):
+                    try:
+                        event_params = json.loads(raw_params)
+                    except Exception:
+                        pass
 
-        standardized_events.append({
-            "timestamp": timestamp_str,
-            "page": page,
-            "action": action,
-            "element": element,
+            event_name = str(ev.get("EVENTNAME") or ev.get("eventname") or ev.get("action") or "UNKNOWN_EVENT")
+            page = str(event_params.get("EP_PAGE_NAME") or event_params.get("EP_SCREEN_NAME") or ev.get("page") or "")
+            if page in ("NA", "nan", ""):
+                page = ""
+            source = str(event_params.get("EP_SOURCE") or event_params.get("EP_CTA") or ev.get("element") or "")
+            if source in ("NA", "nan", ""):
+                source = ""
+            if source.startswith("{value:") and source.endswith("}"):
+                source = source[7:-1]
+            section = str(event_params.get("EP_SECTION") or "")
+            if section in ("NA", "nan", ""):
+                section = ""
+            error_type = str(event_params.get("EP_ERROR_TYPE") or "")
+            cta = str(event_params.get("EP_CTA") or "")
+
+            ev_upper = event_name.upper()
+            event_friction = []
+
+            # PWA / technical errors
+            if "EXCEPTION" in ev_upper or "3IN1_PWA" in ev_upper:
+                event_friction.append("System / PWA Error")
+                friction_signals.add("System / PWA Error")
+
+            # Error / fail / blocked in event name
+            if any(k in ev_upper for k in ["_ERROR", "_FAIL", "_BLOCKED", "_DENIED", "_REJECTED"]):
+                if "System / PWA Error" not in event_friction:
+                    event_friction.append("System / PWA Error")
+                friction_signals.add("System / PWA Error")
+
+            # Connectivity error in EVENT_PARAMS
+            if error_type and "NO INTERNET" in error_type.upper():
+                event_friction.append("Connectivity Error")
+                friction_signals.add("Connectivity Error")
+            elif error_type and error_type.strip() not in ("", "NA", "nan"):
+                if "System / PWA Error" not in event_friction:
+                    event_friction.append("System / PWA Error")
+                friction_signals.add("System / PWA Error")
+
+            # User sought help — strong frustration signal
+            if "HELP_SUPPORT" in ev_upper:
+                event_friction.append("Help Support Triggered")
+                friction_signals.add("Help Support Triggered")
+
+            # Exit intent / abandonment
+            if page and "LEAVING SO SOON" in page.upper():
+                event_friction.append("Exit Intent / Abandoned")
+                friction_signals.add("Exit Intent / Abandoned")
+
+            # Login failure
+            if "LOGIN" in ev_upper and error_type and error_type.strip() not in ("", "NA"):
+                event_friction.append("Login Failure")
+                friction_signals.add("Login Failure")
+
+            # Page reload loop (same page 3+ times in this session)
+            if page:
+                page_visit_counts[page] = page_visit_counts.get(page, 0) + 1
+                if page_visit_counts[page] >= 3:
+                    friction_signals.add("Page Reload Loop")
+
+            # Build compact single-line display
+            detail_parts = []
+            if page:
+                detail_parts.append(page)
+            if source:
+                detail_parts.append(f"<- {source}")
+            if section:
+                detail_parts.append(f"[{section}]")
+            if event_friction:
+                detail_parts.append(f">> {' / '.join(event_friction)}")
+
+            formatted_events.append({
+                "action": f"[{i+1}] {event_name}",
+                "element": "  ".join(detail_parts) if detail_parts else "",
+                "friction": " / ".join(event_friction) if event_friction else ""
+            })
+
+        # Determine overall session status
+        friction_list = sorted(friction_signals)
+        if "Exit Intent / Abandoned" in friction_signals or "Login Failure" in friction_signals:
+            session_status = "Abandonment / Error"
+        elif "Help Support Triggered" in friction_signals or len(friction_signals) >= 2:
+            session_status = "High Frustration"
+        elif friction_signals:
+            session_status = "Minor Confusion"
+        else:
+            session_status = "Smooth Journey"
+
+        result.append({
+            "session_id": session_id,
+            "event_count": len(raw_events),
+            "device": device,
+            "user_type": user_type,
+            "app_version": app_version,
             "platform": platform,
-            "carrier": carrier,
-            "net_type": net_type,
-            "handset": handset,
-            "session_id": ev.get("CT_SESSION_ID") or ev.get("ct_session_id") or "N/A"
+            "friction_signals": friction_list,
+            "session_status": session_status,
+            "events": formatted_events,
         })
 
-    # Heuristic Variables
-    prev_event = None
-    bounces = [] # Track page history to detect loops
-    total_events = len(standardized_events)
-    
-    for i, ev in enumerate(standardized_events):
-        friction_flags = []
-        
-        # Parse current timestamp
-        curr_time = parse_time_string(ev["timestamp"])
-        prev_time = parse_time_string(prev_event["timestamp"]) if prev_event else None
-
-        # 1. Rage Click Detection Heuristic
-        if prev_event:
-            is_same_element = (ev["element"] == prev_event["element"])
-            
-            # Action keywords representing immediate click/submits
-            is_same_action = (
-                ev["action"].lower() in ["click", "submit", "banner_page_viewed", "add to cart"] or 
-                prev_event["action"].lower() in ["click", "submit", "banner_page_viewed", "add to cart"]
-            )
-            
-            time_diff = None
-            if curr_time and prev_time:
-                time_diff = abs((curr_time - prev_time).total_seconds())
-            else:
-                time_diff = 0.5 if i % 4 == 0 else 5.0 # simulation fallback
-                
-            if is_same_element and is_same_action and (time_diff is not None and time_diff <= 1.0):
-                friction_flags.append("Rage Click")
-                ev["action"] = "Double Click (Immediate)"
-                ev["element"] = f"{ev['element']} [REPEATED]"
-
-            # 2. Slow Page Load / Network Latency Heuristic (>15 seconds gap on interactive pages)
-            if time_diff and time_diff > 15.0:
-                is_interactive_flow = any(k in ev["page"].upper() for k in ["CART", "CHECKOUT", "LOGIN", "OTP", "SUBMIT", "PAYMENT"])
-                if is_interactive_flow:
-                    friction_flags.append("Possible Network Latency / UI Bottleneck")
-
-        # 3. Active Error Encountered Heuristic
-        action_upper = ev["action"].upper()
-        if any(err_word in action_upper for err_word in ["ERROR", "FAIL", "BLOCKED", "DENIED", "REJECTED", "EXCEPTION"]):
-            friction_flags.append("System/Transaction Error Encountered")
-
-        # 4. Navigation Loop Checker (A -> B -> A -> B bouncing)
-        bounces.append(ev["page"])
-        if len(bounces) >= 4:
-            last_4 = bounces[-4:]
-            if last_4[0] == last_4[2] and last_4[1] == last_4[3] and last_4[0] != last_4[1]:
-                friction_flags.append("Navigation Loop Friction")
-        
-        # 5. Journey Abandonment / Dropout Risk Heuristic (if terminated after severe friction)
-        is_last_event = (i == total_events - 1)
-        if is_last_event and (len(friction_flags) > 0 or "Error" in ev["action"] or "Double" in ev["action"]):
-            friction_flags.append("High Drop-off/Churn Risk")
-
-        # Format visual friction status
-        friction_status = "Smooth Journey" if not friction_flags else " / ".join(friction_flags)
-        
-        analyzed_timeline.append({
-            "index": i + 1,
-            "timestamp": ev["timestamp"],
-            "session_id": ev["session_id"],
-            "page": ev["page"],
-            "action": ev["action"],
-            "element": ev["element"],
-            "handset": ev["handset"],
-            "platform": ev["platform"],
-            "network": f"{ev['carrier']} ({ev['net_type']})",
-            "friction": friction_status
-        })
-        
-        prev_event = ev
-
-    return analyzed_timeline
+    return result
 
 
 def get_clickstream_simulation_logs(filename: str) -> list:

@@ -563,9 +563,9 @@ def push_form_to_labelstudio(
 def push_clickstream_to_labelstudio(
     original_filename: str,
     client_code: str,
-    clickstream_timeline: list,
+    clickstream_data: list,
 ) -> dict:
-    """Push clickstream logs represented as sequence timelines."""
+    """Push clickstream sessions to Label Studio — one task per CT_SESSION_ID."""
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         api_key = os.getenv("LABEL_STUDIO_API_KEY")
@@ -578,29 +578,82 @@ def push_clickstream_to_labelstudio(
         access_token = _resolve_token(api_key, ls_url)
         headers = _ls_headers(access_token)
 
-        # Format timeline paragraphs for rich Label Studio display
-        formatted_timeline = []
-        for ev in clickstream_timeline:
-            formatted_timeline.append({
-                "action": f"{ev.get('action', 'Click')} [{ev.get('timestamp', '')}]",
-                "element": f"Page: {ev.get('page', 'N/A')} | Target: {ev.get('element', 'N/A')} | Status: {ev.get('friction', 'Smooth')}"
+        # Backward compat: flat event list → wrap into single session
+        if clickstream_data and isinstance(clickstream_data[0], dict) and "session_id" not in clickstream_data[0]:
+            clickstream_data = [{
+                "session_id": "LEGACY",
+                "event_count": len(clickstream_data),
+                "device": "Unknown", "user_type": "Unknown",
+                "app_version": "", "platform": "Mobile",
+                "friction_signals": [], "session_status": "Smooth Journey",
+                "events": [{"action": f"[{i+1}] {ev.get('action','Event')}", "element": ev.get('element',''), "friction": ev.get('friction','')} for i, ev in enumerate(clickstream_data)]
+            }]
+
+        task_payloads = []
+        for session in clickstream_data:
+            session_id     = session.get("session_id", "N/A")
+            event_count    = session.get("event_count", 0)
+            device         = session.get("device", "Unknown")
+            user_type      = session.get("user_type", "Unknown")
+            app_version    = session.get("app_version", "")
+            platform       = session.get("platform", "Mobile")
+            friction_signals = session.get("friction_signals", [])
+            session_status = session.get("session_status", "Smooth Journey")
+            events         = session.get("events", [])
+
+            # Session summary as first paragraph entry
+            friction_label = f">> {', '.join(friction_signals)}" if friction_signals else ">> No friction detected"
+            summary_entry = {
+                "action": "SESSION SUMMARY",
+                "element": f"ID: {session_id}  Device: {device}  App: {app_version}  User: {user_type}  Platform: {platform}  Events: {event_count}  {friction_label}"
+            }
+            timeline = [summary_entry] + [{"action": ev["action"], "element": ev["element"]} for ev in events]
+
+            # Pre-annotations
+            results = [{
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "session_status",
+                "to_name": "filename",
+                "type": "choices",
+                "value": {"choices": [session_status]}
+            }]
+            if friction_signals:
+                results.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "from_name": "friction_types",
+                    "to_name": "filename",
+                    "type": "choices",
+                    "value": {"choices": friction_signals}
+                })
+            ai_note = (
+                f"AI Pre-analysis: {', '.join(friction_signals)} ({event_count} events)."
+                if friction_signals
+                else f"Smooth session — {event_count} events, no friction detected."
+            )
+            results.append({
+                "id": str(uuid.uuid4())[:8],
+                "from_name": "summary",
+                "to_name": "filename",
+                "type": "textarea",
+                "value": {"text": [ai_note]}
             })
 
-        task_payload = {
-            "data": {
-                "clickstream_timeline": formatted_timeline,
-                "filename": original_filename,
-                "client_code": client_code
-            }
-        }
+            task_payloads.append({
+                "data": {
+                    "clickstream_timeline": timeline,
+                    "filename": original_filename,
+                    "client_code": client_code
+                },
+                "annotations": [{"result": results, "was_cancelled": False, "ground_truth": False}]
+            })
 
-        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=30)
+        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=task_payloads, headers=headers, timeout=30)
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
         task_id = ids[0] if ids else resp.get('id')
 
-        return {"status": "success", "task_id": task_id}
+        return {"status": "success", "task_id": task_id, "sessions_imported": len(task_payloads)}
 
     except Exception as e:
         error_msg = f"Error pushing clickstream to Label Studio: {str(e)}"
