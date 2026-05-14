@@ -16,3 +16,4 @@ httpx
 opencv-python-headless
 numpy
 Pillow
+faster-whisper
