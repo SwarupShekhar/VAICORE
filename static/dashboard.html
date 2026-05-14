@@ -194,6 +194,16 @@
                 const response = await fetch(`/api/files/${clientCode}`);
                 const data = await response.json();
 
+                // Skip full DOM rebuild if data unchanged (prevents flicker on poll)
+                const fp = JSON.stringify([
+                    ...data.intake.map(f => `${f.name}|${f.status}`),
+                    ...data.delivery.map(f => f.name)
+                ]);
+                if (fp === window._filesFingerprint && document.querySelector('#uploads-table tbody').children.length > 0) {
+                    return;
+                }
+                window._filesFingerprint = fp;
+
                 // Uploads table
                 const uploadsTbody = document.querySelector('#uploads-table tbody');
                 uploadsTbody.innerHTML = '';
@@ -461,7 +471,7 @@
                             <div style="display: flex; gap: 8px;">
                                 <button class="btn-small" onclick="downloadFile('${file.name}')">Download</button>
                                 <button class="btn-small btn-secondary" onclick="copyShareLink('${file.name}', this)">Copy Link</button>
-                                <button class="btn-small btn-danger" style="background-color: #dc3545; color: white;" onclick="deleteDeliveryFile('${file.name}', this)">Delete</button>
+                                <button class="btn-small btn-danger" onclick="deleteDeliveryFile('${file.name}', this)">Delete</button>
                             </div>
                         </td>
                     `;
@@ -477,6 +487,7 @@
         window._isDeletingClient = false;
 
         function scheduleClientRefresh() {
+            window._filesFingerprint = null; // force re-render after an action
             clearTimeout(window._clientRefreshTimer);
             window._clientRefreshTimer = setTimeout(loadFiles, 1200);
         }
