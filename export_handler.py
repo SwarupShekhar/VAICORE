@@ -188,6 +188,17 @@ def export_and_deliver(
                 annotators.add(email.split("@")[0] if "@" in email else email)
                 
                 if is_image_project:
+                    house_type = "N/A"
+                    nature_of_business = "N/A"
+                    for r_item in result:
+                        if r_item.get("type") == "choices":
+                            fn = r_item.get("from_name", "")
+                            c_vals = r_item.get("value", {}).get("choices", [])
+                            if fn == "construction_type" and c_vals:
+                                house_type = c_vals[0]
+                            elif fn == "business_type" and c_vals:
+                                nature_of_business = c_vals[0]
+                                
                     for r_item in result:
                         val = r_item.get("value", {})
                         rtype = r_item.get("type", "")
@@ -209,7 +220,9 @@ def export_and_deliver(
                                 "Annotator": email.split("@")[0] if "@" in email else email,
                                 "Image File": original_filename,
                                 "Points": points,
-                                "RType": rtype
+                                "RType": rtype,
+                                "House Type": house_type,
+                                "Nature of Business": nature_of_business
                             })
                 elif is_clickstream:
                     session_status = "Smooth Journey"
@@ -311,6 +324,10 @@ def export_and_deliver(
                     "Points Count": seg["Points Count"],
                     "Image File": seg["Image File"]
                 }
+                if is_housing:
+                    row_data["House Type"] = seg.get("House Type", "N/A")
+                if is_business:
+                    row_data["Nature of Business"] = seg.get("Nature of Business", "N/A")
                 if internal_export:
                     row_data["Annotator"] = seg["Annotator"]
                 final_segments.append(row_data)
@@ -319,6 +336,11 @@ def export_and_deliver(
                 columns = ["Item #", "Category", "Geometry Type", "Points Count", "Annotator", "Image File"]
             else:
                 columns = ["Item #", "Category", "Geometry Type", "Points Count", "Image File"]
+                
+            if is_housing:
+                columns.append("House Type")
+            if is_business:
+                columns.append("Nature of Business")
             
             # Summary Configuration
             category_counts = {}
