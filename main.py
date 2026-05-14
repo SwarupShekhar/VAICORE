@@ -323,7 +323,7 @@ async def upload_file_via_token(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     upload_token: str = Form(...),
-    language: str = Form("en"),
+    language: str = Form(""),
     category: str = Form("auto"),
 ):
     """Client-facing anonymous upload — authenticated via upload_token, not session cookie."""
@@ -347,7 +347,7 @@ async def upload_file(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     client_code: str = Form(...),
-    language: str = Form("en"),
+    language: str = Form(""),
     category: str = Form("auto"),
     vaicore_session: str = Cookie(None),
 ):
