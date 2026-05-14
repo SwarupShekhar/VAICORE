@@ -79,6 +79,8 @@ def export_and_deliver(
                 matched_tasks = [r.json()]
         
         if not matched_tasks:
+            import time
+            global _TASK_CACHE
             project_ids_to_check = [str(project_id)]
             for pid in ["1", "2", "3", "4", "5", "6"]:
                 if pid not in project_ids_to_check:
@@ -86,13 +88,22 @@ def export_and_deliver(
 
             for pid in project_ids_to_check:
                 try:
-                    print(f"Fetching bulk JSON export for project {pid}...")
-                    r = requests.get(
-                        f"{ls_url}/api/projects/{pid}/export?exportType=JSON",
-                        headers=headers,
-                        timeout=20
-                    )
-                    all_tasks = r.json() if r.status_code == 200 else []
+                    now = time.time()
+                    export_cache_key = f"export_{ls_url}_{pid}"
+                    tasks_cache_key = f"{ls_url}_{pid}"
+
+                    if export_cache_key in _TASK_CACHE and now - _TASK_CACHE[export_cache_key]["time"] < 15:
+                        all_tasks = _TASK_CACHE[export_cache_key]["tasks"]
+                    else:
+                        print(f"Fetching bulk JSON export for project {pid}...")
+                        r = requests.get(
+                            f"{ls_url}/api/projects/{pid}/export?exportType=JSON",
+                            headers=headers,
+                            timeout=20
+                        )
+                        all_tasks = r.json() if r.status_code == 200 else []
+                        _TASK_CACHE[export_cache_key] = {"tasks": all_tasks, "time": now}
+
                     matched = [
                         t for t in all_tasks
                         if t.get("data", {}).get("client_code") == client_code
@@ -101,15 +112,20 @@ def export_and_deliver(
                     ]
                     if not matched:
                         # Fallback to /api/tasks to catch unsubmitted/imported pre-annotations
-                        tr = requests.get(
-                            f"{ls_url}/api/tasks",
-                            params={"project": pid, "page_size": 1000},
-                            headers=headers,
-                            timeout=20
-                        )
-                        tasks_list = tr.json() if tr.status_code == 200 else []
-                        if isinstance(tasks_list, dict):
-                            tasks_list = tasks_list.get("tasks", [])
+                        if tasks_cache_key in _TASK_CACHE and now - _TASK_CACHE[tasks_cache_key]["time"] < 15:
+                            tasks_list = _TASK_CACHE[tasks_cache_key]["tasks"]
+                        else:
+                            tr = requests.get(
+                                f"{ls_url}/api/tasks",
+                                params={"project": pid, "page_size": 1000},
+                                headers=headers,
+                                timeout=20
+                            )
+                            tasks_list = tr.json() if tr.status_code == 200 else []
+                            if isinstance(tasks_list, dict):
+                                tasks_list = tasks_list.get("tasks", [])
+                            _TASK_CACHE[tasks_cache_key] = {"tasks": tasks_list, "time": now}
+
                         matched = [
                             t for t in tasks_list
                             if t.get("data", {}).get("client_code") == client_code
