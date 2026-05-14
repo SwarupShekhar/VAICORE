@@ -441,7 +441,7 @@ def export_and_deliver(
                         polygon_points=pts,
                         category=item["Category"],
                         client_code=client_code,
-                        task_id=candidate_ids[0] if candidate_ids else 0,
+                        task_id=matched_tasks[0].get("id", 0) if matched_tasks else 0,
                         item_index=item["Item #"],
                         image_file=original_filename,
                         img_width=w,
