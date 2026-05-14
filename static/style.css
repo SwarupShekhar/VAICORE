@@ -393,3 +393,33 @@ th {
     background-color: rgba(197, 232, 77, 0.15);
     color: var(--accent-color);
 }
+
+/* Pipeline status badges (admin) */
+.pipe-status {
+    padding: 3px 10px;
+    border-radius: 50px;
+    font-size: 0.78rem;
+    font-weight: bold;
+    display: inline-block;
+    white-space: nowrap;
+}
+.pipe-status-delivered  { background: rgba(81,207,102,0.15); color: #51cf66; }
+.pipe-status-review     { background: rgba(197,232,77,0.12); color: var(--accent-color); border: 1px solid rgba(197,232,77,0.3); }
+.pipe-status-processing { background: rgba(255,165,0,0.12); color: #ffa94d; border: 1px solid rgba(255,165,0,0.3); animation: pulse 2s infinite; }
+.pipe-status-error      { background: rgba(255,107,107,0.15); color: #ff6b6b; }
+.pipe-status-default    { background: rgba(255,255,255,0.07); color: var(--grey); }
+
+/* Danger / destructive button */
+.btn-danger {
+    background: rgba(255,107,107,0.12);
+    color: #ff6b6b;
+    border: 1px solid rgba(255,107,107,0.25);
+    padding: 6px 12px;
+    font-size: 0.78rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+.btn-danger:hover { background: rgba(255,107,107,0.25); }
+.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }

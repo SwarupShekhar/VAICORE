@@ -65,10 +65,7 @@
         .client-table th { background: rgba(255,255,255,0.05); color: var(--grey); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; }
         .client-table tr:hover td { background: rgba(255,255,255,0.03); }
 
-        .badge-active { background: rgba(81,207,102,0.15); color: #51cf66; padding: 3px 10px; border-radius: 50px; font-size: 0.78rem; font-weight: bold; }
-        .badge-inactive { background: rgba(255,107,107,0.15); color: #ff6b6b; padding: 3px 10px; border-radius: 50px; font-size: 0.78rem; font-weight: bold; }
-
-        .token-cell { font-family: monospace; font-size: 0.78rem; color: var(--grey); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.token-cell { font-family: monospace; font-size: 0.78rem; color: var(--grey); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
         .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .btn-icon {
@@ -409,6 +406,7 @@
     window._refreshTimer = null;
 
     function scheduleRefresh() {
+        window._pipelineFingerprint = null; // force re-render after an action
         clearTimeout(window._refreshTimer);
         window._refreshTimer = setTimeout(loadPipeline, 1200);
     }
@@ -441,10 +439,26 @@
                 return;
             }
             const pipeline = await res.json();
+            // Skip full DOM rebuild if data unchanged (prevents visual flicker on poll)
+            const fp = JSON.stringify(pipeline.map(i => `${i.filename}|${i.status}|${i.client_code}`));
+            if (fp === window._pipelineFingerprint && document.getElementById('pipeline-accordion-container').children.length > 0) {
+                _startPollIfNeeded(pipeline);
+                return;
+            }
+            window._pipelineFingerprint = fp;
             renderPipeline(pipeline);
         } catch(e) {
             container.innerHTML = `<div class="empty-state" style="color:#ff6b6b;">⚠️ Network error loading pipeline. Is the server running?<br><small>${e.message}</small></div>`;
         }
+    }
+
+    function _pipeStatusClass(status) {
+        const s = (status || '').toLowerCase();
+        if (s === 'delivered') return 'pipe-status pipe-status-delivered';
+        if (s === 'in review' || s === 'review finished' || s === 'completed') return 'pipe-status pipe-status-review';
+        if (s === 'processing' || s === 'transcribing' || s === 'uploading' || s === 'extracting') return 'pipe-status pipe-status-processing';
+        if (s === 'failed' || s === 'error') return 'pipe-status pipe-status-error';
+        return 'pipe-status pipe-status-default';
     }
 
     function renderPipeline(items) {
@@ -528,8 +542,8 @@
                     <h3 style="margin:0; color:var(--accent-color); font-size:1.1rem;">${esc(clientCode)}</h3>
                 </div>
                 <div class="client-stats-badges" style="display:flex; gap:8px;">
-                    <span class="badge-active" style="padding:2px 8px; font-size:0.75rem;">${Object.keys(clientData.batches).length} Batches</span>
-                    <span class="badge-inactive" style="background:rgba(255,255,255,0.06); color:var(--grey); padding:2px 8px; font-size:0.75rem;">${clientData.singles.length} Singles</span>
+                    <span class="pipe-status pipe-status-default">${Object.keys(clientData.batches).length} Batches</span>
+                    <span class="pipe-status pipe-status-default">${clientData.singles.length} Singles</span>
                 </div>
             `;
             
@@ -567,10 +581,6 @@
                 const totalFiles = batch.files.length;
                 const completedFiles = batch.files.filter(f => ['In Review', 'Completed', 'Review Finished', 'Delivered'].includes(f.status)).length;
                 
-                let batchStatusClass = 'badge-inactive';
-                if (parent.status === 'Delivered') batchStatusClass = 'badge-active';
-                else if (parent.status === 'In Review' || parent.status === 'Review Finished' || parent.status === 'Completed') batchStatusClass = 'badge-active';
-                
                 batchHeader.innerHTML = `
                     <div style="display:flex; align-items:center; gap:10px; flex-grow:1;">
                         <span class="chevron-sub" id="chevron-${esc(batchId)}">▶</span>
@@ -582,7 +592,7 @@
                         </div>
                     </div>
                     <div style="display:flex; align-items:center; gap:12px;" onclick="event.stopPropagation()">
-                        <span class="${batchStatusClass}" style="font-size:0.75rem; padding:2px 8px;">${esc(parent.status)}</span>
+                        <span class="${_pipeStatusClass(parent.status)}">${esc(parent.status)}</span>
                         ${parent.status !== 'Delivered' ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch</button>` : ''}
                         <button class="btn-small btn-delete" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deleteBatch('${esc(batchId)}')">Delete</button>
                     </div>
@@ -627,18 +637,17 @@
                 } else {
                     batch.files.forEach(f => {
                         const subTr = document.createElement('tr');
-                        const statusClass = f.status === 'Delivered' ? 'badge-active' : (f.status === 'Completed' || f.status === 'Review Finished' ? 'badge-active' : 'badge-inactive');
                         const progressVal = f.completion_percentage || 0;
-                        
+
                         subTr.innerHTML = `
                             <td><span style="font-size:0.85rem;">${esc(f.filename)}</span></td>
-                            <td><span class="${statusClass}" style="font-size:0.72rem; padding:2px 8px;">${esc(f.status)}</span></td>
+                            <td><span class="${_pipeStatusClass(f.status)}">${esc(f.status)}</span></td>
                             <td>
                                 <div style="display:flex; align-items:center; gap:8px;">
-                                    <div style="width: 80px; background: rgba(255,255,255,0.05); height: 5px; border-radius: 2px;">
-                                        <div style="width: ${progressVal}%; background: var(--accent-color); height: 100%; border-radius: 2px;"></div>
+                                    <div class="mini-progress" style="width:80px;">
+                                        <div class="mini-progress-fill" style="width:${progressVal}%;"></div>
                                     </div>
-                                    <span style="font-size:0.7rem; color:var(--grey);">${progressVal}%</span>
+                                    <span class="progress-text" style="margin:0;">${progressVal}%</span>
                                 </div>
                             </td>
                         `;
@@ -692,7 +701,6 @@
                     const tr = document.createElement('tr');
                     const isDelivered = item.status === 'Delivered';
                     const isReady = item.completion_percentage === 100 || item.status === 'Review Finished' || item.status === 'Completed';
-                    const statusClass = isDelivered ? 'badge-active' : (isReady ? 'badge-active' : 'badge-inactive');
 
                     let checkboxHtml = '';
                     if (isReady && !isDelivered) {
@@ -702,8 +710,8 @@
                         checkboxHtml = `<input type="checkbox" class="deliver-check" data-client="${esc(item.client_code)}" data-file="${esc(item.filename)}" ${isChecked} onchange="updateSelectionToolbar('${esc(clientCode)}')">`;
                     }
 
-                    let statusBadge = `<span class="${statusClass}">${esc(item.status)}</span>`;
-                    if (isDelivered) statusBadge = `<span class="badge-active">✓ Delivered</span>`;
+                    const statusLabel = isDelivered ? '✓ Delivered' : esc(item.status);
+                    const statusBadge = `<span class="${_pipeStatusClass(item.status)}">${statusLabel}</span>`;
 
                     tr.innerHTML = `
                         <td>${checkboxHtml}</td>
@@ -711,10 +719,10 @@
                         <td>${statusBadge}</td>
                         <td>
                             <div style="display:flex; align-items:center; gap:8px;">
-                                <div style="width: 100px; background: rgba(255,255,255,0.05); height: 6px; border-radius: 3px;">
-                                    <div style="width: ${item.completion_percentage}%; background: var(--accent-color); height: 100%; border-radius: 3px;"></div>
+                                <div class="mini-progress" style="width:100px;">
+                                    <div class="mini-progress-fill" style="width:${item.completion_percentage}%;"></div>
                                 </div>
-                                <span style="font-size:0.75rem; color:var(--grey);">${item.completion_percentage}%</span>
+                                <span class="progress-text" style="margin:0;">${item.completion_percentage}%</span>
                             </div>
                         </td>
                         <td class="actions">
@@ -1063,8 +1071,8 @@
             if (c.token === newToken) tr.className = 'new-row';
 
             const statusBadge = c.active
-                ? `<span class="badge-active">Active</span>`
-                : `<span class="badge-inactive">Inactive</span>`;
+                ? `<span class="pipe-status pipe-status-delivered">Active</span>`
+                : `<span class="pipe-status pipe-status-error">Inactive</span>`;
 
             const toggleLabel = c.active ? 'Revoke' : 'Activate';
             const toggleClass = c.active ? 'btn-toggle-on' : 'btn-toggle-off';
