@@ -613,14 +613,18 @@ def export_and_deliver(
             "original_filename": original_filename
         }
 
+_TASK_CACHE = {}
+
 def check_annotation_status(
     client_code: str,
     project_id: str,
     original_filename: str = None,
 ) -> Dict[str, Any]:
     """
-    Check the annotation status for a client (or specific file) in Label Studio across all project IDs.
+    Check the annotation status for a client (or specific file) in Label Studio across all project IDs with 15s TTL caching.
     """
+    import time
+    global _TASK_CACHE
     try:
         ls_url = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         headers = _get_ls_headers()
@@ -635,24 +639,33 @@ def check_annotation_status(
 
         for pid in project_ids_to_check:
             try:
-                r = requests.get(
-                    f"{ls_url}/api/tasks",
-                    params={"project": pid, "page_size": 1000},
-                    headers=headers,
-                    timeout=15
-                )
-                if r.status_code == 200:
-                    resp = r.json()
-                    all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
-                    tasks_for_file = [
-                        t for t in all_tasks
-                        if t.get("data", {}).get("client_code") == client_code
-                        and (original_filename is None or t.get("data", {}).get("filename") == original_filename)
-                    ]
-                    if tasks_for_file:
-                        filtered_tasks = tasks_for_file
-                        actual_pid = pid
-                        break
+                now = time.time()
+                cache_key = f"{ls_url}_{pid}"
+                if cache_key in _TASK_CACHE and now - _TASK_CACHE[cache_key]["time"] < 15:
+                    all_tasks = _TASK_CACHE[cache_key]["tasks"]
+                else:
+                    r = requests.get(
+                        f"{ls_url}/api/tasks",
+                        params={"project": pid, "page_size": 1000},
+                        headers=headers,
+                        timeout=10
+                    )
+                    if r.status_code == 200:
+                        resp = r.json()
+                        all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
+                        _TASK_CACHE[cache_key] = {"tasks": all_tasks, "time": now}
+                    else:
+                        all_tasks = []
+
+                tasks_for_file = [
+                    t for t in all_tasks
+                    if t.get("data", {}).get("client_code") == client_code
+                    and (original_filename is None or t.get("data", {}).get("filename") == original_filename)
+                ]
+                if tasks_for_file:
+                    filtered_tasks = tasks_for_file
+                    actual_pid = pid
+                    break
             except Exception:
                 pass
 
