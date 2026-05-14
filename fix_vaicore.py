@@ -62,7 +62,7 @@ def main():
     # via the docker-network address: http://labelstudio:8080 (NOT localhost/127.0.0.1).
     docker_ls_url = "http://labelstudio:8080"
     
-    api_urls = [docker_ls_url, "https://annotate.vaidik.ai", ls_url]
+    api_urls = ["https://annotate.vaidik.ai", "http://localhost:4006", "http://127.0.0.1:4006", docker_ls_url, ls_url]
 
     print(f"DEBUG: Found token starting with: '{corrupt_token[:10]}...'")
     
@@ -76,13 +76,123 @@ def main():
     else:
         print("✅ Label Studio Token format appears to have the correct 'eyJ' prefix.")
 
+    # Define all 6 projects and configs
+    required_projects = [
+        {
+            "title": "Audio Transcription & Diarization",
+            "alias": "Audio",
+            "env_var": "LABEL_STUDIO_PROJECT_ID",
+            "default_id": "1",
+            "config": """<View>
+  <Header value="Review Status (Admin/Reviewer Use Only)"/>
+  <Choices name="review_status" toName="audio" choice="single" showInline="true">
+    <Choice value="Accepted" hint="Mark as ready for client delivery"/>
+    <Choice value="Rejected" hint="Needs correction"/>
+  </Choices>
+
+  <Audio name="audio" value="$audio"/>
+  <Labels name="speaker" toName="audio">
+    <Label value="Agent" background="#2196F3"/>
+    <Label value="Customer" background="#4CAF50"/>
+    <Label value="Teacher" background="#FF9800"/>
+    <Label value="Student" background="#9C27B0"/>
+    <Label value="Doctor" background="#F44336"/>
+    <Label value="Patient" background="#00BCD4"/>
+    <Label value="Interviewer" background="#795548"/>
+    <Label value="Interviewee" background="#607D8B"/>
+    <Label value="Speaker 1" background="#3F51B5"/>
+    <Label value="Speaker 2" background="#009688"/>
+    <Label value="AI" background="#E91E63"/>
+  </Labels>
+  <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Transcript..." rows="2"/>
+</View>"""
+        },
+        {
+            "title": "Jewelry Segmentation",
+            "alias": "Jewelry",
+            "env_var": "LABEL_STUDIO_JEWELRY_PROJECT_ID",
+            "default_id": "2",
+            "config": """<View>
+  <Image name="image" value="$image"/>
+  <PolygonLabels name="label" toName="image">
+    <Label value="Jewelry" background="#FFD700"/>
+  </PolygonLabels>
+  <KeyPointLabels name="keypoint" toName="image">
+    <Label value="Positive" background="#00FF00"/>
+    <Label value="Negative" background="#FF0000"/>
+  </KeyPointLabels>
+  <RectangleLabels name="bbox" toName="image">
+    <Label value="Bounding Box" background="#0000FF"/>
+  </RectangleLabels>
+</View>"""
+        },
+        {
+            "title": "Form OCR Redaction",
+            "alias": "Form",
+            "env_var": "LABEL_STUDIO_FORM_PROJECT_ID",
+            "default_id": "3",
+            "config": """<View>
+  <Image name="document" value="$document_url"/>
+  <TextArea name="extracted_text" toName="document" rows="10" placeholder="Extracted form text..."/>
+</View>"""
+        },
+        {
+            "title": "Clickstream Analytics",
+            "alias": "Clickstream",
+            "env_var": "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID",
+            "default_id": "4",
+            "config": """<View>
+  <Text name="filename" value="$filename"/>
+  <Paragraphs name="timeline" value="$clickstream_timeline" nameKey="action" textKey="element"/>
+  <Choices name="analysis" toName="timeline" choice="single">
+    <Choice value="Smooth"/>
+    <Choice value="High Frustration"/>
+  </Choices>
+</View>"""
+        },
+        {
+            "title": "House Image Annotation",
+            "alias": "Housing",
+            "env_var": "LABEL_STUDIO_HOUSING_PROJECT_ID",
+            "default_id": "5",
+            "config": """<View>
+  <Image name="image" value="$image" />
+  <PolygonLabels name="label" toName="image">
+    <Label value="house_facade" background="#FF4D4D" />
+    <Label value="representative_person" background="#4CAF50" />
+    <Label value="business_signboard" background="#2196F3" />
+  </PolygonLabels>
+</View>"""
+        },
+        {
+            "title": "Nature of Business",
+            "alias": "Business",
+            "env_var": "LABEL_STUDIO_BUSINESS_PROJECT_ID",
+            "default_id": "6",
+            "config": """<View>
+  <Image name="document" value="$document_url" />
+  <TextArea name="extracted_text" toName="document" rows="10" placeholder="Extracted business details..." />
+</View>"""
+        }
+    ]
+
     # 3. Test and Verify Connection
-    connected = False
+    connected_any = False
     valid_token = None
-    active_url = None
-    
+
+    project_ids_result = {p["env_var"]: p["default_id"] for p in required_projects}
+
+    seen_urls = set()
     for url in api_urls:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+
         print(f"\nTrying to connect to Label Studio at: {url}...")
+        connected = False
+        active_token = None
+        headers_auth = None
+
         for tok, name in [(fixed_token, "Corrected Token"), (corrupt_token, "Current Token")]:
             # Direct check
             headers = {"Authorization": f"Bearer {tok}"}
@@ -91,118 +201,75 @@ def main():
                 user_email = resp.get("email", "unknown")
                 print(f"   ✅ SUCCESS using {name}! Authenticated as: {user_email}")
                 connected = True
-                valid_token = tok
-                active_url = url
+                active_token = tok
+                headers_auth = headers
                 break
             
             # Refresh check
             code_ref, resp_ref = make_request(f"{url}/api/token/refresh", method="POST", data={"refresh": tok})
             if code_ref == 200:
                 access_token = resp_ref.get("access")
-                headers_auth = {"Authorization": f"Bearer {access_token}"}
-                code_who, resp_who = make_request(f"{url}/api/current-user/whoami", headers=headers_auth)
+                headers_temp = {"Authorization": f"Bearer {access_token}"}
+                code_who, resp_who = make_request(f"{url}/api/current-user/whoami", headers=headers_temp)
                 if code_who == 200:
                     user_email = resp_who.get("email", "unknown")
                     print(f"   ✅ SUCCESS using {name} (via refresh)! Authenticated as: {user_email}")
                     connected = True
-                    valid_token = tok
-                    active_url = url
+                    active_token = tok
+                    headers_auth = headers_temp
                     break
                     
         if connected:
-            break
+            connected_any = True
+            valid_token = active_token
+            print(f"\n🔨 Checking for missing projects in Label Studio at {url}...")
+            
+            projects = []
+            code_p, resp_p = make_request(f"{url}/api/projects", headers=headers_auth)
+            if code_p == 200:
+                projects = resp_p.get("results", [])
+                print(f"   Found {len(projects)} existing projects.")
+            
+            existing_titles = {p.get("title"): p.get("id") for p in projects}
 
-    housing_id = "3"
-    business_id = "4"
+            for p_spec in required_projects:
+                title = p_spec["title"]
+                alias = p_spec["alias"]
+                env_var = p_spec["env_var"]
 
-    if not connected:
+                # Find existing by exact title or alias
+                found_id = None
+                for t_exist, id_exist in existing_titles.items():
+                    if t_exist in (title, alias):
+                        found_id = id_exist
+                        break
+                
+                if found_id is not None:
+                    print(f"   ✅ Found existing '{title}' project with ID: {found_id}")
+                    project_ids_result[env_var] = str(found_id)
+                else:
+                    print(f"   ➕ Project '{title}' is missing. Creating it...")
+                    code_c, resp_c = make_request(f"{url}/api/projects", method="POST", data={
+                        "title": title,
+                        "label_config": p_spec["config"]
+                    }, headers=headers_auth)
+                    if code_c == 201:
+                        created_id = str(resp_c.get("id"))
+                        print(f"   ✅ Created '{title}' with Project ID: {created_id}")
+                        project_ids_result[env_var] = created_id
+                    else:
+                        print(f"   ❌ Failed to create project '{title}' (code {code_c}): {resp_c}")
+
+    if not connected_any:
         print("\n❌ Could not connect to Label Studio API with either token.")
         print("Please check that Label Studio is running and your token is copied correctly from Profile -> Access Token.")
     else:
-        # Create missing projects if connected
-        print("\n🔨 Checking for missing projects in Label Studio...")
-        headers = {"Authorization": f"Bearer {valid_token}"}
-        
-        # Try getting projects
-        projects = []
-        code_p, resp_p = make_request(f"{active_url}/api/projects", headers=headers)
-        if code_p == 200:
-            projects = resp_p.get("results", [])
-            print(f"   Found {len(projects)} existing projects.")
-        else:
-            # Try with refresh
-            code_ref, resp_ref = make_request(f"{active_url}/api/token/refresh", method="POST", data={"refresh": valid_token})
-            if code_ref == 200:
-                access_token = resp_ref.get("access")
-                headers_auth = {"Authorization": f"Bearer {access_token}"}
-                code_p2, resp_p2 = make_request(f"{active_url}/api/projects", headers=headers_auth)
-                if code_p2 == 200:
-                    projects = resp_p2.get("results", [])
-                    print(f"   Found {len(projects)} existing projects.")
-                    headers = headers_auth
-
-        existing_titles = [p.get("title") for p in projects]
-        
-        # Create House Image Annotation
-        if "House Image Annotation" not in existing_titles and "Housing" not in existing_titles:
-            print("   ➕ Project 'House Image Annotation' is missing. Creating it...")
-            housing_config = """<View>
-  <Image name="image" value="$image" />
-  <PolygonLabels name="label" toName="image">
-    <Label value="house_facade" background="#FF4D4D" />
-    <Label value="representative_person" background="#4CAF50" />
-    <Label value="business_signboard" background="#2196F3" />
-  </PolygonLabels>
-</View>"""
-            code_c, resp_c = make_request(f"{active_url}/api/projects", method="POST", data={
-                "title": "House Image Annotation",
-                "label_config": housing_config
-            }, headers=headers)
-            if code_c == 201:
-                housing_id = str(resp_c.get("id"))
-                print(f"   ✅ Created 'House Image Annotation' with Project ID: {housing_id}")
-            else:
-                print(f"   ❌ Failed to create project (code {code_c}): {resp_c}")
-        else:
-            for p in projects:
-                if p.get("title") in ("House Image Annotation", "Housing"):
-                    housing_id = str(p.get("id"))
-                    print(f"   ✅ Found existing Housing project with ID: {housing_id}")
-                    break
-
-        # Create Nature of Business
-        if "Nature of Business" not in existing_titles and "Business" not in existing_titles:
-            print("   ➕ Project 'Nature of Business' is missing. Creating it...")
-            business_config = """<View>
-  <Image name="document" value="$document_url" />
-  <TextArea name="extracted_text" toName="document" rows="10" placeholder="Extracted business details..." />
-</View>"""
-            code_c, resp_c = make_request(f"{active_url}/api/projects", method="POST", data={
-                "title": "Nature of Business",
-                "label_config": business_config
-            }, headers=headers)
-            if code_c == 201:
-                business_id = str(resp_c.get("id"))
-                print(f"   ✅ Created 'Nature of Business' with Project ID: {business_id}")
-            else:
-                print(f"   ❌ Failed to create project (code {code_c}): {resp_c}")
-        else:
-            for p in projects:
-                if p.get("title") in ("Nature of Business", "Business"):
-                    business_id = str(p.get("id"))
-                    print(f"   ✅ Found existing Business project with ID: {business_id}")
-                    break
-
         # Update env content lines for project IDs
-        if "LABEL_STUDIO_HOUSING_PROJECT_ID" in env_content:
-            env_content = re.sub(r"LABEL_STUDIO_HOUSING_PROJECT_ID\s*=\s*[^\n]+", f"LABEL_STUDIO_HOUSING_PROJECT_ID={housing_id}", env_content)
-        else:
-            env_content += f"\nLABEL_STUDIO_HOUSING_PROJECT_ID={housing_id}"
-
-        if "LABEL_STUDIO_BUSINESS_PROJECT_ID" in env_content:
-            env_content = re.sub(r"LABEL_STUDIO_BUSINESS_PROJECT_ID\s*=\s*[^\n]+", f"LABEL_STUDIO_BUSINESS_PROJECT_ID={business_id}", env_content)
-        else:
-            env_content += f"\nLABEL_STUDIO_BUSINESS_PROJECT_ID={business_id}"
+        for env_var, pid in project_ids_result.items():
+            if env_var in env_content:
+                env_content = re.sub(rf"{env_var}\s*=\s*[^\n]+", f"{env_var}={pid}", env_content)
+            else:
+                env_content += f"\n{env_var}={pid}"
 
     # 4. Save fixed env content (including token and URL fixes)
     if is_corrupt:
@@ -222,11 +289,12 @@ def main():
     print("\n==============================================")
     print("              ✨ FIXES APPLIED ✨             ")
     print("==============================================")
-    print("1. Fixed missing leading 'e' in Label Studio API key.")
+    print("1. Verified/Fixed Label Studio API key format.")
     print(f"2. Updated Label Studio URL to the internal Docker network: {docker_ls_url}")
-    if connected:
-        print(f"3. Checked/Created 'House Image Annotation' (ID: {housing_id}).")
-        print(f"4. Checked/Created 'Nature of Business' (ID: {business_id}).")
+    if connected_any:
+        print("3. Checked and created all 6 essential projects:")
+        for p in required_projects:
+            print(f"   - {p['title']} (ID: {project_ids_result[p['env_var']]})")
     print("\n👉 Please restart your containers now to apply changes:")
     print("   docker compose down")
     print("   docker compose up -d")
