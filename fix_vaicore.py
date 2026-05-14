@@ -154,12 +154,30 @@ def main():
             "env_var": "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID",
             "default_id": "4",
             "config": """<View>
-  <Text name="filename" value="$filename"/>
+  <Header value="Clickstream Session Analysis" />
+  <Text name="filename" value="Log File: $filename" />
   <Paragraphs name="timeline" value="$clickstream_timeline" nameKey="action" textKey="element"/>
-  <Choices name="analysis" toName="timeline" choice="single">
-    <Choice value="Smooth"/>
-    <Choice value="High Frustration"/>
+  
+  <Header value="1. Overall Session Journey" />
+  <Choices name="session_status" toName="filename" choice="single" showInline="true">
+    <Choice value="Smooth Journey" background="#4CAF50" />
+    <Choice value="Minor Confusion" background="#FF9800" />
+    <Choice value="High Frustration" background="#FF5252" />
+    <Choice value="Abandonment / Error" background="#9C27B0" />
   </Choices>
+  
+  <Header value="2. Detected Behavioral Friction" />
+  <Choices name="friction_types" toName="filename" choice="multiple" showInline="true">
+    <Choice value="System / PWA Error" background="#FF5252" />
+    <Choice value="Connectivity Error" background="#FF9800" />
+    <Choice value="Help Support Triggered" background="#9C27B0" />
+    <Choice value="Exit Intent / Abandoned" background="#F44336" />
+    <Choice value="Login Failure" background="#E91E63" />
+    <Choice value="Page Reload Loop" background="#607D8B" />
+  </Choices>
+  
+  <Header value="3. Root Cause Analysis / Notes" />
+  <TextArea name="summary" toName="filename" rows="3" placeholder="Describe session bottlenecks or UI friction observed..." />
 </View>"""
         },
         {
