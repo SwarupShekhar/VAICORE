@@ -182,12 +182,8 @@ def export_and_deliver(
                             break
                     review_result = annotation.get("review_result")
                     task_reviews = task.get("reviews", [])
-                    is_accepted = (review_result == "accepted") or \
-                                  (manual_status == "Accepted") or \
-                                  (len(task_reviews) > 0 and task_reviews[0].get("accepted") is True)
-                    if not is_accepted:
-                        continue
                     
+
                 email = annotation.get("created_username") or "Annotator"
                 annotators.add(email.split("@")[0] if "@" in email else email)
                 
