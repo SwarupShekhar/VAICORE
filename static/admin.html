@@ -679,7 +679,9 @@
                     let checkboxHtml = '';
                     if (isReady && !isDelivered) {
                         tr.className = 'row-selectable';
-                        checkboxHtml = `<input type="checkbox" class="deliver-check" data-client="${esc(item.client_code)}" data-file="${esc(item.filename)}" onchange="updateSelectionToolbar('${esc(clientCode)}')">`;
+                        const key = item.client_code + "___" + item.filename;
+                        const isChecked = window.selectedDeliverFiles && window.selectedDeliverFiles[key] ? 'checked' : '';
+                        checkboxHtml = `<input type="checkbox" class="deliver-check" data-client="${esc(item.client_code)}" data-file="${esc(item.filename)}" ${isChecked} onchange="updateSelectionToolbar('${esc(clientCode)}')">`;
                     }
 
                     let statusBadge = `<span class="${statusClass}">${esc(item.status)}</span>`;
@@ -705,6 +707,9 @@
                 });
                 singlesWrapper.appendChild(table);
                 clientContent.appendChild(singlesWrapper);
+                
+                // Ensure toolbar state is restored after re-render
+                setTimeout(() => updateSelectionToolbar(clientCode), 10);
             }
 
             clientSection.appendChild(clientHeader);
@@ -723,6 +728,13 @@
 
     // ── Selection toolbar update ───────────────────────────────
     function updateSelectionToolbar(clientCode) {
+        window.selectedDeliverFiles = window.selectedDeliverFiles || {};
+        document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]`).forEach(cb => {
+            const key = clientCode + "___" + cb.getAttribute('data-file');
+            if (cb.checked) window.selectedDeliverFiles[key] = true;
+            else delete window.selectedDeliverFiles[key];
+        });
+
         const checks = document.querySelectorAll(`.deliver-check[data-client="${clientCode}"]:checked`);
         const counter = document.getElementById(`sel-count-${clientCode}`);
         const pkgBtn = document.getElementById(`pkg-btn-${clientCode}`);
