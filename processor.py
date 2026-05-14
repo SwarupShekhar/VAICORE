@@ -198,6 +198,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                             file=f,
                             model="whisper-1",
                             response_format="verbose_json",
+                            timestamp_granularities=["segment"],
                             language=language if language else None
                         )
                     break
@@ -213,7 +214,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                             from faster_whisper import WhisperModel
                             print("Loading 'small' model for high-accuracy local fallback...")
                             local_model = WhisperModel("small", device="cpu", compute_type="int8")
-                            segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language)
+                            segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language if language else None)
                             
                             local_segments = []
                             for s in segments:
