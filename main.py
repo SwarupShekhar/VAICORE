@@ -1931,19 +1931,55 @@ async def run_transcript_pipeline(
 
 async def _run_webhook_export(client_code: str, original_filename: str, project_id: str, label_id: str):
     try:
-        # Gatekeeper Workflow: DO NOT auto-deliver. 
-        # Just update the upload log to trigger the Admin Dashboard's manual "Deliver to Client" button!
+        # 1. Fetch completion progress from Label Studio to avoid marking multi-task files as "Done" prematurely
+        status = "Review Finished"
+        try:
+            import requests as _requests
+            from labelstudio_client import _resolve_token
+            ls_url = os.getenv("LABEL_STUDIO_URL", "http://labelstudio:8080").rstrip("/")
+            api_key = os.getenv("LABEL_STUDIO_API_KEY")
+            access_token = _resolve_token(api_key, ls_url)
+            headers = {"Authorization": f"Bearer {access_token}"}
+            
+            # Query all tasks for this project (or a subset)
+            # Label Studio API: GET /api/projects/{id}/tasks
+            # We fetch a larger page size to ensure we see the tasks for this file
+            r = _requests.get(f"{ls_url}/api/projects/{project_id}/tasks?page_size=1000", headers=headers, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                tasks = data.get("tasks", data) if isinstance(data, dict) else data
+                
+                # Filter tasks that belong to this specific upload
+                file_tasks = [t for t in tasks if t.get("data", {}).get("filename") == original_filename]
+                total = len(file_tasks)
+                completed = len([t for t in file_tasks if t.get("total_annotations", 0) > 0])
+                
+                if total > 1:
+                    if completed < total:
+                        status = f"In Review ({completed}/{total})"
+                    else:
+                        status = "Review Finished"
+                else:
+                    status = "Review Finished"
+        except Exception as e:
+            print(f"Progress check failed, defaulting to 'Review Finished': {e}")
+
+        # 2. Update the upload log
         try:
             async with aiofiles.open("upload_log.json", "r") as f:
                 content = await f.read()
             logs = json.loads(content)
+            updated = False
             for log in logs:
                 if log.get("client_code") == client_code and log.get("filename") == original_filename:
-                    log["status"] = "Review Finished"
+                    log["status"] = status
+                    updated = True
                     break
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
-            print(f"Webhook processed: Status updated to 'Review Finished' for {client_code}/{original_filename}")
+            
+            if updated:
+                async with aiofiles.open("upload_log.json", "w") as f:
+                    await f.write(json.dumps(logs, indent=2))
+                print(f"Webhook processed: Status set to '{status}' for {client_code}/{original_filename}")
         except Exception as e:
             print(f"Log update failed in webhook: {e}")
     except Exception as e:
