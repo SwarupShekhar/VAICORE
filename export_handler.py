@@ -194,6 +194,7 @@ def export_and_deliver(
                 
                 if is_image_project:
                     house_type = "N/A"
+                    storey_count = "N/A"
                     nature_of_business = "N/A"
                     for r_item in result:
                         if r_item.get("type") == "choices":
@@ -201,6 +202,8 @@ def export_and_deliver(
                             c_vals = r_item.get("value", {}).get("choices", [])
                             if fn == "construction_type" and c_vals:
                                 house_type = c_vals[0]
+                            elif fn == "storey_count" and c_vals:
+                                storey_count = c_vals[0]
                             elif fn == "business_type" and c_vals:
                                 nature_of_business = c_vals[0]
                                 
@@ -227,6 +230,7 @@ def export_and_deliver(
                                 "Points": points,
                                 "RType": rtype,
                                 "House Type": house_type,
+                                "Storey Count": storey_count,
                                 "Nature of Business": nature_of_business
                             })
                 elif is_clickstream:
@@ -331,6 +335,7 @@ def export_and_deliver(
                 }
                 if is_housing:
                     row_data["House Type"] = seg.get("House Type", "N/A")
+                    row_data["Storey Count"] = seg.get("Storey Count", "N/A")
                 if is_business:
                     row_data["Nature of Business"] = seg.get("Nature of Business", "N/A")
                 if internal_export:
@@ -344,6 +349,7 @@ def export_and_deliver(
                 
             if is_housing:
                 columns.append("House Type")
+                columns.append("Storey Count")
             if is_business:
                 columns.append("Nature of Business")
             
