@@ -133,18 +133,28 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                         raw_text = str(row_dict.get("transcript", "")).strip()
                         if not raw_text: continue
                         
-                        # Split dialogue turns
+                        # Refined Smart Split: Splitting on known keywords to avoid internal colons (like 10:00 AM)
                         call_segments = []
-                        lines = raw_text.split('\n')
-                        for line in lines:
-                            line = line.strip()
-                            if not line: continue
-                            match = re.match(r'^([^:]+):\s*(.*)$', line)
+                        # We split by common speaker markers and capture them
+                        parts = re.split(r'(?i)\s*(Agent|Customer|User|Client|System|Bot|Speaker\s*\d+):\s*', raw_text)
+                        
+                        if len(parts) > 1:
+                            # re.split with a group returns [pre-text, speaker1, text1, speaker2, text2, ...]
+                            # The first element is usually empty if it starts with a speaker
+                            for i in range(1, len(parts), 2):
+                                sp = parts[i]
+                                tx = parts[i+1] if (i+1) < len(parts) else ""
+                                if tx.strip():
+                                    call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
+                        
+                        if not call_segments:
+                            # Fallback to simple split if keywords not found
+                            match = re.match(r'^([^:]+):\s*(.*)$', raw_text)
                             if match:
                                 sp, tx = match.groups()
                                 call_segments.append({"speaker": sp.strip(), "transcript": tx.strip()})
                             else:
-                                call_segments.append({"speaker": "Unknown", "transcript": line})
+                                call_segments.append({"speaker": "Unknown", "transcript": raw_text})
                         
                         bulk_tasks.append({
                             "type": "bulk_call",
