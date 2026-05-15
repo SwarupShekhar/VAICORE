@@ -768,6 +768,7 @@ def push_text_transcript_to_labelstudio(
             
             # 2. Build the pre-annotation for this paragraph
             result.append({
+                "id": f"p_{i}",
                 "from_name": "labels",
                 "to_name": "dialogue",
                 "type": "paragraphlabels",
