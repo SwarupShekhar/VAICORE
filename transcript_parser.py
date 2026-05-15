@@ -156,9 +156,20 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                             else:
                                 call_segments.append({"speaker": "Unknown", "transcript": raw_text})
                         
+                        # Robust metadata extraction: find something for call_id and agent_name
+                        clean_metadata = {}
+                        for k, v in row_dict.items():
+                            k_clean = k.lower().replace(" ", "_")
+                            if k_clean in ["call_id", "id", "callid", "reference"]:
+                                clean_metadata["call_id"] = v
+                            elif k_clean in ["agent", "agent_name", "user", "staff"]:
+                                clean_metadata["agent_name"] = v
+                            else:
+                                clean_metadata[k_clean] = v
+
                         bulk_tasks.append({
                             "type": "bulk_call",
-                            "metadata": row_dict,
+                            "metadata": clean_metadata,
                             "segments": call_segments
                         })
                     if bulk_tasks:
