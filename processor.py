@@ -144,6 +144,44 @@ def identify_speaker_roles(segments: List[Dict], client_code: str) -> Dict[str, 
         print(f"Role identification failed: {e}")
         return {sid: sid for sid in speaker_ids}
 
+def get_call_intelligence(transcript: str) -> Dict[str, Any]:
+    """
+    Perform deep strategic analysis of a call transcript using GPT-4o.
+    Detects friction, latency, disputes, and self-service failures.
+    """
+    try:
+        print("Running AI Intelligence Analysis on transcript...")
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a Senior Call Intelligence Analyst for a Financial Institution. "
+                        "Analyze the transcript and identify the following signals:\n"
+                        "1. Onboarding Friction: e-KYC, V-KYC, Net Banking, App UX issues.\n"
+                        "2. Operational Pain: TAT/Disbursement delays, policy confusion.\n"
+                        "3. Financial Disputes: Insurance add-ons, foreclosure fees, bouncing penalties.\n"
+                        "4. Self-Service Failure: Borrowers leaving App/IVR for simple tasks (Statements, Interest Certs).\n"
+                        "5. Customer Mood: Satisfied, Neutral, Frustrated, Angry.\n"
+                        "6. Churn Risk: High Risk, Medium Risk, Low Risk.\n"
+                        "Return ONLY a JSON object with these keys: onboarding_friction (list), operational_pain (list), "
+                        "financial_disputes (list), service_leakage (list), mood (string), churn_risk (string), summary (string)."
+                    )
+                },
+                {"role": "user", "content": f"Transcript:\n{transcript}"}
+            ],
+            response_format={"type": "json_object"}
+        )
+        intelligence = json.loads(response.choices[0].message.content)
+        return intelligence
+    except Exception as e:
+        print(f"AI Intelligence Analysis failed: {e}")
+        return {
+            "onboarding_friction": [], "operational_pain": [], "financial_disputes": [], 
+            "service_leakage": [], "mood": "Neutral", "churn_risk": "Low Risk", "summary": ""
+        }
+
 def process_audio(blob_filename: str, client_code: str, language: str = 'hi') -> Dict[str, Any]:
     """
     Process audio file using OpenAI gpt-4o-transcribe-diarize for high performance.
@@ -194,12 +232,14 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                 try:
                     with open(local_audio_path, "rb") as f:
                         # ENGINE 1: OpenAI Whisper (Stable & Fast)
+                        # Added prompt for context-aware transcription (Hinglish/Financial terms)
                         response = client.audio.transcriptions.create(
                             file=f,
                             model="whisper-1",
                             response_format="verbose_json",
                             timestamp_granularities=["segment"],
-                            language=language if language else None
+                            language=language if language else None,
+                            prompt="Hello, Bajaj Finance Limited, Personal Loan Department, EMI, Interest Rate, KYC, Aadhaar card, PAN card, Hinglish conversation, customer service."
                         )
                     break
                 except Exception as e:
@@ -208,12 +248,12 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     if attempt < max_retries - 1:
                         time.sleep(3 * (attempt + 1))
                     else:
-                        print(f"Whisper-1 failed: {e}. Attempting LOCAL FALLBACK (faster-whisper)...")
-                        mode = "LOCAL (faster-whisper)"
+                        print(f"Whisper-1 failed: {e}. Attempting LOCAL FALLBACK (Whisper Large-v3)...")
+                        mode = "LOCAL (Whisper Large-v3)"
                         try:
                             from faster_whisper import WhisperModel
-                            print("Loading 'small' model for high-accuracy local fallback...")
-                            local_model = WhisperModel("small", device="cpu", compute_type="int8")
+                            print("Loading 'large-v3' model for state-of-the-art accuracy...")
+                            local_model = WhisperModel("large-v3", device="cpu", compute_type="int8")
                             segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language if language else None)
                             
                             local_segments = []
