@@ -751,19 +751,26 @@ def push_text_transcript_to_labelstudio(
 
         # Check if we are in Bulk Mode (list of task dicts instead of segments)
         if isinstance(segments[0], dict) and segments[0].get("type") == "bulk_call":
+            from processor import get_call_intelligence
+            
             all_payloads = []
             for task_data in segments:
                 metadata = task_data.get("metadata", {})
                 call_segments = task_data.get("segments", [])
                 
+                # Combine segments into full text for intelligence analysis
+                full_transcript = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('transcript', '')}" for s in call_segments])
+                intel = get_call_intelligence(full_transcript)
+                
                 dialogue_data = []
                 result = []
+                
+                # 1. Dialogue Turns
                 for i, seg in enumerate(call_segments):
                     sp_raw = seg.get("speaker", "Unknown")
                     tx = seg.get("transcript", "")
                     scrubbed = mask_text_data(tx)
                     
-                    # Map to known labels: Agent, Customer, System
                     label = "Agent"
                     sp_low = sp_raw.lower()
                     if any(x in sp_low for x in ["customer", "user", "client", "borrower"]):
@@ -774,25 +781,51 @@ def push_text_transcript_to_labelstudio(
                     dialogue_data.append({"author": sp_raw, "text": scrubbed})
                     result.append({
                         "id": f"p_{i}",
-                        "from_name": "labels",
-                        "to_name": "dialogue",
-                        "type": "paragraphlabels",
-                        "value": {
-                            "start": str(i),
-                            "end": str(i),
-                            "paragraphlabels": [label]
-                        }
+                        "from_name": "labels", "to_name": "dialogue", "type": "paragraphlabels",
+                        "value": {"start": str(i), "end": str(i), "paragraphlabels": [label]}
                     })
                 
+                # 2. Intelligence Tags (Pre-annotations)
+                # Mood
+                if intel.get("mood"):
+                    result.append({
+                        "from_name": "customer_mood", "to_name": "dialogue", "type": "choices",
+                        "value": {"choices": [intel["mood"]]}
+                    })
+                # Churn Risk
+                if intel.get("churn_risk"):
+                    result.append({
+                        "from_name": "churn_risk", "to_name": "dialogue", "type": "choices",
+                        "value": {"choices": [intel["churn_risk"]]}
+                    })
+                # Multi-choice tags
+                for key, from_name in [
+                    ("onboarding_friction", "onboarding_friction"),
+                    ("operational_pain", "operational_pain"),
+                    ("financial_disputes", "financial_disputes"),
+                    ("service_leakage", "service_leakage")
+                ]:
+                    vals = intel.get(key, [])
+                    if vals:
+                        result.append({
+                            "from_name": from_name, "to_name": "dialogue", "type": "choices",
+                            "value": {"choices": vals}
+                        })
+                # Summary
+                if intel.get("summary"):
+                    result.append({
+                        "from_name": "summary", "to_name": "dialogue", "type": "textarea",
+                        "value": {"text": [intel["summary"]]}
+                    })
+
                 payload = {
                     "data": {
                         "dialogue": dialogue_data,
                         "call_id": str(metadata.get("call_id", "N/A")),
                         "agent_name": str(metadata.get("agent_name", "N/A")),
                         "call_date": str(metadata.get("call_date", "N/A")),
-                        "summary": str(metadata.get("summary", "N/A")),
-                        "sentiment": str(metadata.get("sentiment", "N/A")),
-                        "compliance_score": str(metadata.get("compliance_score", "N/A")),
+                        "summary": str(intel.get("summary", "N/A")),
+                        "sentiment": str(intel.get("mood", "N/A")),
                         "filename": original_filename,
                         "client_code": client_code
                     },
@@ -806,56 +839,76 @@ def push_text_transcript_to_labelstudio(
             return {"status": "success", "tasks_created": len(all_payloads)}
 
         # Legacy Single Task Mode
+        from processor import get_call_intelligence
+        
         speaker_to_label = {}
         if len(seen_speakers) >= 1:
-            speaker_to_label[seen_speakers[0]] = role_labels[0]
+            speaker_to_label[seen_speakers[0]] = "Agent"
         if len(seen_speakers) >= 2:
-            speaker_to_label[seen_speakers[1]] = role_labels[1] if len(role_labels) > 1 else role_labels[0]
+            speaker_to_label[seen_speakers[1]] = "Customer"
 
         result = []
         dialogue_data = []
         
+        # Collect full transcript for AI analysis
+        full_transcript = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('transcript', '')}" for s in segments])
+        intel = get_call_intelligence(full_transcript)
+        
         for i, segment in enumerate(segments):
             speaker_raw = segment.get('speaker', 'Unknown')
-            label = speaker_to_label.get(speaker_raw, role_labels[0])
+            label = speaker_to_label.get(speaker_raw, "Unknown")
             scrubbed_text = mask_text_data(segment.get("transcript", ""))
             
-            # 1. Build the Paragraphs data item
-            dialogue_data.append({
-                "author": label,
-                "text": scrubbed_text
-            })
-            
-            # 2. Build the pre-annotation for this paragraph
+            dialogue_data.append({"author": label, "text": scrubbed_text})
             result.append({
                 "id": f"p_{i}",
-                "from_name": "labels",
-                "to_name": "dialogue",
-                "type": "paragraphlabels",
-                "value": {
-                    "start": str(i),
-                    "end": str(i),
-                    "paragraphlabels": [label]
-                }
+                "from_name": "labels", "to_name": "dialogue", "type": "paragraphlabels",
+                "value": {"start": str(i), "end": str(i), "paragraphlabels": [label]}
             })
 
-        task_payload = {
-            "data": {
-                "dialogue": dialogue_data,
-                "filename": original_filename,
-                "client_code": client_code,
-                "text_only_transcript": True
-            },
-            "annotations": [
-                {
-                    "result": result,
-                    "was_cancelled": False,
-                    "ground_truth": False
-                }
-            ]
-        }
+        # Add Intelligence Pre-annotations
+        if intel.get("mood"):
+            result.append({
+                "from_name": "customer_mood", "to_name": "dialogue", "type": "choices",
+                "value": {"choices": [intel["mood"]]}
+            })
+        for key, from_name in [
+            ("onboarding_friction", "onboarding_friction"),
+            ("operational_pain", "operational_pain"),
+            ("financial_disputes", "financial_disputes"),
+            ("service_leakage", "service_leakage")
+        ]:
+            vals = intel.get(key, [])
+            if vals:
+                result.append({
+                    "from_name": from_name, "to_name": "dialogue", "type": "choices",
+                    "value": {"choices": vals}
+                })
+        if intel.get("summary"):
+            result.append({
+                "from_name": "summary", "to_name": "dialogue", "type": "textarea",
+                "value": {"text": [intel["summary"]]}
+            })
 
-        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=30)
+        # Final Payload (supports Project 1 and legacy fallbacks)
+        task_data = {
+            "dialogue": dialogue_data,
+            "filename": original_filename,
+            "client_code": client_code,
+            "call_id": str(metadata.get("call_id", "N/A")),
+            "agent_name": str(metadata.get("agent_name", "N/A"))
+        }
+        
+        # Add audio URL if it's an audio project
+        if audio_url:
+            task_data["audio"] = audio_url
+
+        task_payload = {
+            "data": task_data,
+            "annotations": [{"result": result}]
+        }
+        
+        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
