@@ -328,11 +328,10 @@ def push_to_labelstudio(
                 "client_code": client_code,
                 "language": language or "en"
             },
-            "annotations": [
+            "predictions": [
                 {
                     "result": result,
-                    "was_cancelled": False,
-                    "ground_truth": False
+                    "model_version": "gpt-4o-whisper"
                 }
             ]
         }
@@ -474,11 +473,10 @@ def push_jewelry_to_labelstudio(
         }
 
         if results:
-            task_payload["annotations"] = [
+            task_payload["predictions"] = [
                 {
                     "result": results,
-                    "was_cancelled": False,
-                    "ground_truth": False
+                    "model_version": "gpt-4o-vision"
                 }
             ]
 
@@ -538,11 +536,10 @@ def push_form_to_labelstudio(
                 "client_code": client_code,
                 "anonymized_ocr_text": anonymized_ocr_text
             },
-            "annotations": [
+            "predictions": [
                 {
                     "result": results,
-                    "was_cancelled": False,
-                    "ground_truth": False
+                    "model_version": "gpt-4o-ocr"
                 }
             ]
         }
@@ -683,7 +680,7 @@ def push_clickstream_to_labelstudio(
                     "filename": original_filename,
                     "client_code": client_code
                 },
-                "annotations": [{"result": results, "was_cancelled": False, "ground_truth": False}]
+                "predictions": [{"result": results, "model_version": "gpt-4o-clickstream"}]
             })
 
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=task_payloads, headers=headers, timeout=30)
@@ -762,13 +759,18 @@ def push_text_transcript_to_labelstudio(
                 # Combine segments into full text for intelligence analysis
                 full_transcript = "\n".join([f"{s.get('speaker', 'Unknown')}: {s.get('transcript', '')}" for s in call_segments])
                 
-                # AI Rate-Limit Safety
+                # AI Rate-Limit Safety — 1s pacing between calls to avoid 429s on bulk uploads
                 try:
                     import time
-                    time.sleep(0.5) # Prevent TPM burst
+                    if all_payloads:  # skip delay on first row
+                        time.sleep(1.0)
                     intel = get_call_intelligence(full_transcript)
                 except Exception as ai_e:
-                    print(f"AI Intelligence skipped for bulk row: {ai_e}")
+                    print(f"AI Intelligence skipped for bulk row (Pacing/Error): {ai_e}")
+                    intel = {}
+                
+                # Ensure intel is at least an empty dict for downstream checks
+                if not isinstance(intel, dict) or "error" in str(intel).lower():
                     intel = {}
                 
                 dialogue_data = []
@@ -835,7 +837,7 @@ def push_text_transcript_to_labelstudio(
                 payload = {
                     "data": {
                         "dialogue": dialogue_data,
-                        "call_id": str(metadata.get("call_id", "N/A")),
+                        "call_id": str(metadata.get("call_id") or metadata.get("identifier", "N/A")),
                         "agent_name": str(metadata.get("agent_name", "N/A")),
                         "call_date": str(metadata.get("call_date", "N/A")),
                         "summary": str(intel.get("summary", "N/A")),
@@ -843,12 +845,12 @@ def push_text_transcript_to_labelstudio(
                         "filename": original_filename,
                         "client_code": client_code
                     },
-                    "annotations": [{"result": result}]
+                    "predictions": [{"result": result, "model_version": "gpt-4o-intelligence"}]
                 }
                 all_payloads.append(payload)
             
             # Import all tasks at once
-            r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=all_payloads, headers=headers, timeout=60)
+            r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=all_payloads, headers=headers, timeout=120)
             r.raise_for_status()
             return {"status": "success", "tasks_created": len(all_payloads)}
 
@@ -930,7 +932,7 @@ def push_text_transcript_to_labelstudio(
 
         task_payload = {
             "data": task_data,
-            "annotations": [{"result": result}]
+            "predictions": [{"result": result, "model_version": "gpt-4o-intelligence"}]
         }
         
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
