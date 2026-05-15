@@ -103,11 +103,21 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                 
                 data_rows = rows[1:] if len(headers) > 0 and (speaker_idx != -1 or text_idx != -1) else rows
                 # 1. Check for Bulk Mode (Each row is a separate task)
-                # We assume bulk mode if there's more than one row and we can find a 'text' or 'transcript' column
-                has_bulk_text = any(h in ["transcript", "text", "message", "content", "dialogue", "conversation", "call_transcript"] for h in headers)
-                
-                if len(rows) > 1 and has_bulk_text:
+                # If there's more than one row, we almost certainly want each row as a task
+                print(f"XLSX Parse: Rows found={len(rows)}, Headers={headers}")
+                if len(rows) > 1:
+                    print(f"XLSX Parse: Triggering Bulk Mode for {len(rows)-1} tasks")
                     bulk_tasks = []
+                    # Try to find which column is likely the transcript (longest text)
+                    potential_text_idx = text_idx
+                    if potential_text_idx == -1:
+                        # Find column with most characters in the first data row
+                        max_len = -1
+                        for i, cell in enumerate(rows[1]):
+                            if cell and len(str(cell)) > max_len:
+                                max_len = len(str(cell))
+                                potential_text_idx = i
+                    
                     for r_idx, r in enumerate(rows[1:]):
                         if not r or all(cell is None or str(cell).strip() == "" for cell in r): 
                             continue
@@ -116,16 +126,17 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                         
                         # Find the transcript column (fuzzy)
                         raw_text = ""
-                        for tx_key in ["transcript", "text", "message", "content", "dialogue", "conversation", "call_transcript"]:
+                        # Try known keys first
+                        for tx_key in ["transcript", "text", "message", "content", "dialogue", "conversation", "call_transcript", "description", "log", "logs", "call_log", "transcript_text"]:
                             if tx_key in row_dict and row_dict[tx_key]:
                                 raw_text = str(row_dict[tx_key]).strip()
                                 break
                         
+                        if not raw_text and potential_text_idx != -1:
+                            raw_text = str(r[potential_text_idx]).strip() if potential_text_idx < len(r) and r[potential_text_idx] is not None else ""
+                        
                         if not raw_text:
-                            # Fallback to the longest cell in the row
-                            cells = [str(c) for c in r if c is not None]
-                            if cells:
-                                raw_text = max(cells, key=len)
+                            continue
 
                         # Split text into dialogue segments
                         call_segments = []
@@ -146,11 +157,19 @@ def parse_transcript_content(content: bytes, filename: str) -> List[Dict[str, An
                             else:
                                 call_segments.append({"speaker": "Unknown", "transcript": raw_text})
                         
-                        # Extract metadata
+                        # Extract metadata — skip transcript column content (already parsed into segments)
+                        _TRANSCRIPT_KEYS = {
+                            "transcript", "text", "message", "content", "dialogue",
+                            "conversation", "call_transcript", "description", "log", "logs",
+                            "call_log", "transcript_text", "base_transcript", "raw_transcript",
+                            "full_transcript", "call_data",
+                        }
                         clean_metadata = {}
                         for k, v in row_dict.items():
                             k_clean = k.lower().replace(" ", "_").strip()
-                            if k_clean in ["call_id", "id", "callid", "reference", "ref"]:
+                            if k_clean in _TRANSCRIPT_KEYS:
+                                continue  # already parsed into segments
+                            elif k_clean in ["call_id", "id", "callid", "reference", "ref", "identifier"]:
                                 clean_metadata["call_id"] = v
                             elif k_clean in ["agent", "agent_name", "user", "staff", "consultant"]:
                                 clean_metadata["agent_name"] = v

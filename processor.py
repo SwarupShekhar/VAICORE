@@ -24,7 +24,7 @@ load_dotenv()
 _PROCESSING_LOCK = threading.Lock()
 
 # Initialize OpenAI Client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0)
 
 # Client-specific role labels (Overridable)
 # Format: { 'CLIENT_CODE': {'Agent': 'AgentLabel', 'Customer': 'CustomerLabel'} }
@@ -153,6 +153,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
         print("Running AI Intelligence Analysis on transcript...")
         response = client.chat.completions.create(
             model="gpt-4o",
+            timeout=5.0,
             messages=[
                 {
                     "role": "system",
