@@ -371,13 +371,26 @@ def push_to_labelstudio(
         if language and language in LANGUAGE_ANNOTATOR_MAP:
             task_payload["assignees"] = LANGUAGE_ANNOTATOR_MAP[language]
 
-        print(f"Importing task to Label Studio with {len(segments)} segments ({len(result)} annotation regions)...")
+        # Label Studio 1.13+ often uses /api/projects/{id}/tasks for programmatic creation
+        import_url = f"{ls_url}/api/projects/{project_id}/tasks"
+        print(f"Importing task to Label Studio via {import_url}...")
+        
         r = _req.post(
-            f"{ls_url}/api/projects/{project_id}/import",
-            json=[task_payload],
+            import_url,
+            json=task_payload,  # Send as single task object
             headers=headers,
             timeout=60
         )
+        
+        # Fallback to /import if /tasks gives 404
+        if r.status_code == 404:
+            print("Endpoint /tasks returned 404. Falling back to /import...")
+            r = _req.post(
+                f"{ls_url}/api/projects/{project_id}/import",
+                json=[task_payload],
+                headers=headers,
+                timeout=60
+            )
         r.raise_for_status()
         resp = r.json()
         print(f"Import complete. Response: {resp}")
