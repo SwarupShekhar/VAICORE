@@ -243,9 +243,28 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             if hf_token:
                 print("Starting Pyannote Diarization...")
                 try:
+                    # Pre-validate token access to gated model before loading heavy pipeline
+                    import requests as _hf_req
+                    _PYANNOTE_MODEL = "pyannote/speaker-diarization-3.1"
+                    _config_url = f"https://huggingface.co/{_PYANNOTE_MODEL}/resolve/main/config.yaml"
+                    _r = _hf_req.head(_config_url, headers={"Authorization": f"Bearer {hf_token}"}, timeout=10)
+                    if _r.status_code == 401:
+                        raise PermissionError(
+                            "HF_TOKEN is invalid or expired. Generate a new READ token at "
+                            "https://huggingface.co/settings/tokens"
+                        )
+                    if _r.status_code == 403:
+                        raise PermissionError(
+                            f"HF account has NOT accepted terms for {_PYANNOTE_MODEL}. "
+                            f"Visit https://huggingface.co/{_PYANNOTE_MODEL} and click 'Agree and access repository'."
+                        )
+                    if _r.status_code not in (200, 302):
+                        raise PermissionError(f"Unexpected HF response {_r.status_code} for {_PYANNOTE_MODEL}")
+                    print(f"HF token validated. Access to {_PYANNOTE_MODEL} confirmed.")
+
                     from pyannote.audio import Pipeline
                     pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization-3.1",
+                        _PYANNOTE_MODEL,
                         token=hf_token
                     )
                     import torch
