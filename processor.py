@@ -285,7 +285,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         # Added prompt for context-aware transcription (Hinglish/Financial terms)
                         response = client.audio.transcriptions.create(
                             file=f,
-                            model="whisper-1",
+                            model="gpt-4o-transcribe",
                             response_format="verbose_json",
                             timestamp_granularities=["segment"],
                             language=language if language else None,
