@@ -31,20 +31,20 @@ CLIENT_ROLE_CONFIG = {
 CLIENT_PROMPT_CONFIG = {
     # Whisper prompt acts as vocabulary hint — include domain words exactly as they should be transcribed
     'DEFAULT': (
-        "Namaskar, namaste, haan ji, theek hai, ek second, bilkul, samajh gaya, "
-        "customer service, loan, EMI, interest rate, processing fee, KYC, Aadhaar, PAN card, "
-        "account number, IFSC, NACH mandate, disbursement, foreclosure, outstanding balance, "
-        "no-dues certificate, statement, NOC, insurance premium, "
-        "Hinglish, Hindi, financial services call center."
+        "नमस्कार, ठीक है, बिल्कुल, समझ गया, एक सेकंड, हाँ जी, "
+        "customer service, loan, EMI, interest rate, processing fee, KYC, "
+        "Aadhaar, PAN card, account number, IFSC, NACH mandate, disbursement, "
+        "foreclosure, outstanding balance, no-dues certificate, NOC, insurance premium, "
+        "Hindi financial services call center."
     ),
     'bajaj': (
-        "Namaskar, Bajaj Finance Limited, Personal Loan, Business Loan, Gold Loan, "
+        "नमस्कार, ठीक है, बिल्कुल, हाँ जी, एक मिनट, समझ गया, "
+        "Bajaj Finance Limited, Personal Loan, Business Loan, Gold Loan, "
         "EMI, interest rate, processing fee, prepayment, foreclosure charges, "
         "KYC, e-KYC, V-KYC, Aadhaar card, PAN card, NACH mandate, ECS, "
         "disbursement, outstanding balance, overdue amount, bounce charges, "
-        "haan ji, theek hai, bilkul, ek minute, samajh gaya, "
         "loan account number, IFSC code, no-dues certificate, NOC, "
-        "Hinglish, Hindi customer service, financial services."
+        "Hindi customer service, financial services."
     ),
 }
 
@@ -126,7 +126,8 @@ def identify_speaker_roles(segments: List[Dict], client_code: str) -> Dict[str, 
         return {}
     
     if len(speaker_ids) == 1:
-        return {speaker_ids[0]: "Agent"}
+        # Only one speaker detected — keep raw ID so labelstudio_client maps it by order
+        return {speaker_ids[0]: speaker_ids[0]}
 
     # 2. Prepare sample transcript (first 15 segments)
     sample_lines = [f"{s.get('speaker')}: {s.get('text')}" for s in segments[:15]]
@@ -321,7 +322,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                             model="whisper-1",
                             response_format="verbose_json",
                             timestamp_granularities=["segment"],
-                            language=language if language else None,
+                            language=language or 'hi',
                             prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                         )
                     break
@@ -392,8 +393,8 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     if dominant_speaker != "Unknown":
                         current_speaker = dominant_speaker
                 else:
-                    # Gap-based fallback: 0.8s silence = likely speaker change
-                    if start - last_end_time > 0.8:
+                    # Gap-based fallback: 0.5s silence = likely speaker change
+                    if start - last_end_time > 0.5:
                         current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
                 
                 if filter_segment(text, avg_logprob):
