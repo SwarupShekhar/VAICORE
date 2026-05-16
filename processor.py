@@ -338,15 +338,14 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         timestamp_granularities=["segment"],
                         prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                     )
-                
+
                 detected_language = getattr(response, 'language', None) or 'auto'
                 print(f"Transcription complete. Detected language: {detected_language}")
-                
-                # Build from Groq's SEGMENT-level output — complete and
-                # reliable. Groq's word-level array is frequently truncated,
-                # which silently drops large portions of the transcript. So we
-                # never build from words. Speaker is assigned per segment from
-                # pyannote turns (dominant time-overlap), gap-based otherwise.
+
+                # Single-call segment-level output. Whisper segments cover the
+                # full audio contiguously; absolute timestamps line up with the
+                # pyannote turns computed on the SAME full audio (chunking
+                # broke this alignment and split words mid-utterance).
                 raw_segments = getattr(response, 'segments', []) or []
                 response_text = getattr(response, 'text', '') or ''
 

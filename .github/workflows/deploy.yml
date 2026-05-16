@@ -81,8 +81,11 @@ jobs:
             $DC stop vaidikai-portal sam-ml-backend || true
             $DC rm -f vaidikai-portal sam-ml-backend || true
 
-            echo "🔨 Building new images..."
-            $DC build --no-cache vaidikai-portal sam-ml-backend
+            # Use Docker layer cache: requirements.txt unchanged => the heavy
+            # torch/pyannote pip layer is reused (was the ~8min of --no-cache).
+            # Code is bind-mounted (.:/app) so it goes live regardless of build.
+            echo "🔨 Building images (layer cache enabled)..."
+            $DC build vaidikai-portal sam-ml-backend
 
             echo "🚀 Starting all services..."
             $DC up -d
