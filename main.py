@@ -10,6 +10,7 @@ import json
 import hmac
 import secrets
 import hashlib
+import threading
 import aiofiles
 import asyncio
 from datetime import datetime, timedelta, date
@@ -29,8 +30,7 @@ from labelstudio_client import (
 
 def get_project_id_for_file(client_code: str, filename: str) -> str:
     try:
-        with open("upload_log.json", "r") as f:
-            logs = json.load(f)
+        logs = load_upload_log()
         for log in reversed(logs):
             if log.get("client_code") == client_code and log.get("filename") == filename:
                 cat = log.get("category")
@@ -90,6 +90,35 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 CLIENTS_FILE = Path(__file__).parent / "clients.json"
 
+# File-level locks — protect concurrent read-modify-write on flat-file state
+_LOG_LOCK = threading.Lock()
+_CLIENTS_LOCK = threading.Lock()
+
+def _load_upload_log_no_lock() -> list:
+    try:
+        with open("upload_log.json", "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+def _save_upload_log_no_lock(logs: list):
+    with open("upload_log.json", "w") as f:
+        json.dump(logs, f, indent=2)
+
+def load_upload_log() -> list:
+    with _LOG_LOCK:
+        return _load_upload_log_no_lock()
+
+def save_upload_log(logs: list):
+    with _LOG_LOCK:
+        _save_upload_log_no_lock(logs)
+
+def append_upload_log(entry: dict):
+    with _LOG_LOCK:
+        logs = _load_upload_log_no_lock()
+        logs.append(entry)
+        _save_upload_log_no_lock(logs)
+
 LANGUAGE_MAP = {
     'hi': 'Hindi',
     'ta': 'Tamil',
@@ -129,15 +158,17 @@ _INVALID_LINK_HTML = """<!DOCTYPE html>
 
 
 def load_clients() -> dict:
-    if not CLIENTS_FILE.exists():
-        return {}
-    with open(CLIENTS_FILE) as f:
-        return json.load(f)
+    with _CLIENTS_LOCK:
+        if not CLIENTS_FILE.exists():
+            return {}
+        with open(CLIENTS_FILE) as f:
+            return json.load(f)
 
 
 def save_clients(clients: dict):
-    with open(CLIENTS_FILE, "w") as f:
-        json.dump(clients, f, indent=2)
+    with _CLIENTS_LOCK:
+        with open(CLIENTS_FILE, "w") as f:
+            json.dump(clients, f, indent=2)
 
 
 def get_valid_client_codes() -> set:
@@ -453,18 +484,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
         log_entry["batch_id"] = batch_id
         log_entry["is_batch"] = True
 
-    logs = []
-    try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            log_content = await f.read()
-            logs = json.loads(log_content)
-    except (FileNotFoundError, json.JSONDecodeError):
-        logs = []
-
-    logs.append(log_entry)
-    async with aiofiles.open("upload_log.json", "w") as f:
-        await f.write(json.dumps(logs, indent=2))
-    print(f"DEBUG: Logging complete.")
+    await asyncio.to_thread(append_upload_log, log_entry)
 
     audio_types = [
         "audio/mpeg", "audio/wav", "audio/x-m4a", "audio/ogg", "audio/flac", "audio/mp4",
@@ -598,28 +618,33 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
 
 
 async def update_log_status(client_code: str, filename: str, timestamp: str, status: str, **kwargs):
+    def _sync_update():
+        with _LOG_LOCK:
+            logs = _load_upload_log_no_lock()
+            updated = False
+            
+            # If timestamp is provided, look for exact match.
+            # If not, look for the latest entry matching client_code and filename.
+            target_logs = reversed(logs) if not timestamp else logs
+            
+            for log in target_logs:
+                if (
+                    log.get("client_code") == client_code
+                    and log.get("filename") == filename
+                    and (not timestamp or log.get("timestamp") == timestamp)
+                ):
+                    log["status"] = status
+                    for key, value in kwargs.items():
+                        log[key] = value
+                    updated = True
+                    break
+                    
+            if updated:
+                _save_upload_log_no_lock(logs)
+                print(f"Status updated to '{status}' for {filename}")
+
     try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            content = await f.read()
-            logs = json.loads(content)
-
-        updated = False
-        for log in logs:
-            if (
-                log.get("client_code") == client_code
-                and log.get("filename") == filename
-                and log.get("timestamp") == timestamp
-            ):
-                log["status"] = status
-                for key, value in kwargs.items():
-                    log[key] = value
-                updated = True
-                break
-
-        if updated:
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
-            print(f"DEBUG: Status updated to '{status}' for {filename}")
+        await asyncio.to_thread(_sync_update)
     except Exception as e:
         print(f"ERROR: Failed to update log status: {str(e)}")
 
@@ -635,12 +660,10 @@ async def get_files(
     status_map = {}
     logs = []
     try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            log_content = await f.read()
-            logs = json.loads(log_content)
-            for log in logs:
-                if log.get("client_code") == client_code:
-                    status_map[log["filename"]] = log.get("status", "Received")
+        logs = await asyncio.to_thread(load_upload_log)
+        for log in logs:
+            if log.get("client_code") == client_code:
+                status_map[log["filename"]] = log.get("status", "Received")
     except Exception:
         pass
 
@@ -758,20 +781,7 @@ async def export_results(
         result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id, internal_export=internal)
 
         if result['status'] == 'success':
-            async with aiofiles.open("upload_log.json", "r") as f:
-                content = await f.read()
-                logs = json.loads(content)
-
-            for log in logs:
-                if log.get("client_code") == client_code and log.get("filename") == filename:
-                    log["status"] = "Delivered"
-                    break
-            
-            try:
-                async with aiofiles.open("upload_log.json", "w") as f:
-                    await f.write(json.dumps(logs, indent=2))
-            except Exception as e:
-                print(f"Failed to update log to Delivered: {e}")
+            await update_log_status(client_code, filename, None, "Delivered")
             
             # Use the actual exported filename (zip/xlsx) for the download link, not the raw media filename
             exported_filename = result.get("xlsx_filename", filename)
@@ -860,15 +870,15 @@ async def package_delivery(
         await bc.upload_blob(zip_buffer.read(), overwrite=True)
 
     # Mark all packaged files as Delivered in the log
-    async with aiofiles.open("upload_log.json", "r") as f:
-        logs = json.loads(await f.read())
+    def _sync_mark_delivered():
+        with _LOG_LOCK:
+            logs = _load_upload_log_no_lock()
+            for log in logs:
+                if log.get("client_code") == client_code and log.get("filename") in exported_files:
+                    log["status"] = "Delivered"
+            _save_upload_log_no_lock(logs)
 
-    for log in logs:
-        if log.get("client_code") == client_code and log.get("filename") in exported_files:
-            log["status"] = "Delivered"
-
-    async with aiofiles.open("upload_log.json", "w") as f:
-        await f.write(json.dumps(logs, indent=2))
+    await asyncio.to_thread(_sync_mark_delivered)
 
     return {
         "success": True,
@@ -897,20 +907,7 @@ async def export_results_force(
         )
 
         if result['status'] == 'success':
-            async with aiofiles.open("upload_log.json", "r") as f:
-                content = await f.read()
-                logs = json.loads(content)
-
-            for log in logs:
-                if log.get("client_code") == client_code and log.get("filename") == filename:
-                    log["status"] = "Delivered (Override)"
-                    break
-            
-            try:
-                async with aiofiles.open("upload_log.json", "w") as f:
-                    await f.write(json.dumps(logs, indent=2))
-            except Exception as e:
-                print(f"Failed to update log to Delivered (Override): {e}")
+            await update_log_status(client_code, filename, None, "Delivered (Override)")
             
             return {"success": True, "message": result.get("message") + " [Admin Override]"}
         else:
@@ -1017,17 +1014,7 @@ async def admin_logout():
 async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
-        logs = []
-        try:
-            async with aiofiles.open("upload_log.json", "r") as f:
-                content = await f.read()
-            logs = json.loads(content)
-        except Exception:
-            logs = []
-
-        # Keep a tracking map to avoid duplicates
-        existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
-
+        blobs_data = []
         try:
             async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
                 container_client_intake = blob_service_client.get_container_client("client-intake")
@@ -1039,28 +1026,31 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
                         sub_parts = full_name.split("_", 2)
                         original_name = sub_parts[2] if len(sub_parts) >= 3 else full_name
                         timestamp = f"{sub_parts[0]}_{sub_parts[1]}" if len(sub_parts) >= 3 else "20260501_120000"
-                        
-                        if (client_code, original_name) not in existing:
-                            existing.add((client_code, original_name))
-                            logs.append({
-                                "client_code": client_code,
-                                "filename": original_name,
-                                "timestamp": timestamp,
-                                "status": "In Review",
-                                "category": "auto"
-                            })
+                        blobs_data.append((client_code, original_name, timestamp))
         except Exception as blob_err:
             print(f"Admin pipeline blob sync error: {blob_err}")
 
-        # Sort logs by timestamp descending
-        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        
-        # Save recovered logs back to disk so it stays in sync
-        try:
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
-        except Exception:
-            pass
+        def _sync_merge_and_save(blobs):
+            with _LOG_LOCK:
+                logs = _load_upload_log_no_lock()
+                existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
+                
+                for client_code, original_name, timestamp in blobs:
+                    if (client_code, original_name) not in existing:
+                        existing.add((client_code, original_name))
+                        logs.append({
+                            "client_code": client_code,
+                            "filename": original_name,
+                            "timestamp": timestamp,
+                            "status": "In Review",
+                            "category": "auto"
+                        })
+                        
+                logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                _save_upload_log_no_lock(logs)
+                return logs
+
+        logs = await asyncio.to_thread(_sync_merge_and_save, blobs_data)
         
         pipeline = []
         for entry in logs[:200]:
@@ -1110,15 +1100,19 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
     """Deletes an old or failed job from the upload log, tidying up the operations center."""
     _check_admin(vaicore_admin)
     try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            logs = json.loads(await f.read())
-            
-        initial_len = len(logs)
-        logs = [log for log in logs if not (log.get("client_code") == client_code and log.get("filename") == filename)]
-        
-        if len(logs) < initial_len:
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
+        def _sync_delete_job():
+            with _LOG_LOCK:
+                logs = _load_upload_log_no_lock()
+                initial_len = len(logs)
+                logs = [log for log in logs if not (log.get("client_code") == client_code and log.get("filename") == filename)]
+                
+                if len(logs) < initial_len:
+                    _save_upload_log_no_lock(logs)
+                    return True
+                return False
+
+        success = await asyncio.to_thread(_sync_delete_job)
+        if success:
             return {"success": True, "message": "Job deleted successfully"}
         else:
             return {"success": False, "message": "Job not found"}
@@ -1127,27 +1121,7 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
         print(f"Admin delete error: {e}")
         return {"success": False, "message": str(e)}
 
-@app.delete("/api/admin/batches/{batch_id}")
-async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
-    """Deletes an entire batch from the pipeline."""
-    _check_admin(vaicore_admin)
-    try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            logs = json.loads(await f.read())
-            
-        initial_len = len(logs)
-        logs = [log for log in logs if log.get("batch_id") != batch_id]
-        
-        if len(logs) < initial_len:
-            async with aiofiles.open("upload_log.json", "w") as f:
-                await f.write(json.dumps(logs, indent=2))
-            return {"success": True, "message": "Batch deleted successfully"}
-        else:
-            return {"success": False, "message": "Batch not found"}
-            
-    except Exception as e:
-        print(f"Admin delete batch error: {e}")
-        return {"success": False, "message": str(e)}
+# Removed duplicate admin_delete_batch route (the more complete one is defined later in the file)
 
 
 
@@ -1364,10 +1338,8 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
 
     # Rule 2: Client Default Mapping
     try:
-        if CLIENTS_FILE.exists():
-            with open(CLIENTS_FILE, 'r', encoding='utf-8') as f:
-                clients = json.load(f)
-            for entry in clients.values():
+        clients = load_clients()
+        for entry in clients.values():
                 if entry.get("client_code") == client_code:
                     project_ids = entry.get("project_ids", {})
                     # If client has specific project type mapping but not others, use it
@@ -1968,20 +1940,7 @@ async def _run_webhook_export(client_code: str, original_filename: str, project_
 
         # 2. Update the upload log
         try:
-            async with aiofiles.open("upload_log.json", "r") as f:
-                content = await f.read()
-            logs = json.loads(content)
-            updated = False
-            for log in logs:
-                if log.get("client_code") == client_code and log.get("filename") == original_filename:
-                    log["status"] = status
-                    updated = True
-                    break
-            
-            if updated:
-                async with aiofiles.open("upload_log.json", "w") as f:
-                    await f.write(json.dumps(logs, indent=2))
-                print(f"Webhook processed: Status set to '{status}' for {client_code}/{original_filename}")
+            await update_log_status(client_code, original_filename, None, status)
         except Exception as e:
             print(f"Log update failed in webhook: {e}")
     except Exception as e:
@@ -2068,12 +2027,7 @@ async def run_zip_batch_pipeline(
                 }
 
                 # Read and write to logs safely
-                async with aiofiles.open("upload_log.json", "r") as lf:
-                    log_content = await lf.read()
-                    logs = json.loads(log_content)
-                logs.append(sub_log_entry)
-                async with aiofiles.open("upload_log.json", "w") as lf:
-                    await lf.write(json.dumps(logs, indent=2))
+                await asyncio.to_thread(append_upload_log, sub_log_entry)
 
                 sub_filename_lower = sub_safe_filename.lower()
                 audio_extensions = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.mp4']
@@ -2137,9 +2091,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
         # 1. Fetch child items from logs
-        async with aiofiles.open("upload_log.json", "r") as f:
-            content = await f.read()
-        logs = json.loads(content)
+        logs = await asyncio.to_thread(load_upload_log)
 
         batch_logs = [log for log in logs if log.get("batch_id") == batch_id and not log.get("is_batch")]
         parent_log = next((log for log in logs if log.get("batch_id") == batch_id and log.get("is_batch")), None)
@@ -2191,12 +2143,15 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
             await b_client.upload_blob(zip_buffer.getvalue(), overwrite=True)
 
         # 5. Update logs to Delivered
-        for log in logs:
-            if log.get("batch_id") == batch_id:
-                log["status"] = "Delivered"
+        def _sync_mark_batch_delivered():
+            with _LOG_LOCK:
+                logs = _load_upload_log_no_lock()
+                for log in logs:
+                    if log.get("batch_id") == batch_id:
+                        log["status"] = "Delivered"
+                _save_upload_log_no_lock(logs)
 
-        async with aiofiles.open("upload_log.json", "w") as f:
-            await f.write(json.dumps(logs, indent=2))
+        await asyncio.to_thread(_sync_mark_batch_delivered)
 
         # 6. Generate secure 72-hour SAS link
         exported_filename = batch_zip_name
@@ -2226,31 +2181,35 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
 async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
-        async with aiofiles.open("upload_log.json", "r") as f:
-            content = await f.read()
-        logs = json.loads(content)
+        def _sync_delete_batch():
+            with _LOG_LOCK:
+                logs = _load_upload_log_no_lock()
+                
+                deleted_filenames = []
+                deleted_sub_blobs = []
+                client_code = None
+                
+                new_logs = []
+                for log in logs:
+                    if log.get("batch_id") == batch_id:
+                        deleted_filenames.append(log.get("filename"))
+                        client_code = log.get("client_code")
+                        if log.get("sub_blob_name"):
+                            deleted_sub_blobs.append(log.get("sub_blob_name"))
+                        if log.get("is_batch"):
+                            deleted_sub_blobs.append(f"{client_code}/{log.get('timestamp')}_{log.get('filename')}")
+                    else:
+                        new_logs.append(log)
+                        
+                if deleted_filenames:
+                    _save_upload_log_no_lock(new_logs)
+                    
+                return deleted_filenames, deleted_sub_blobs, client_code
 
-        deleted_filenames = []
-        deleted_sub_blobs = []
-        client_code = None
-
-        new_logs = []
-        for log in logs:
-            if log.get("batch_id") == batch_id:
-                deleted_filenames.append(log.get("filename"))
-                client_code = log.get("client_code")
-                if log.get("sub_blob_name"):
-                    deleted_sub_blobs.append(log.get("sub_blob_name"))
-                if log.get("is_batch"):
-                    deleted_sub_blobs.append(f"{client_code}/{log.get('timestamp')}_{log.get('filename')}")
-            else:
-                new_logs.append(log)
-
+        deleted_filenames, deleted_sub_blobs, client_code = await asyncio.to_thread(_sync_delete_batch)
+        
         if not deleted_filenames:
             raise HTTPException(status_code=404, detail="Batch not found")
-
-        async with aiofiles.open("upload_log.json", "w") as f:
-            await f.write(json.dumps(new_logs, indent=2))
 
         async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
             container_intake = blob_service_client.get_container_client("client-intake")

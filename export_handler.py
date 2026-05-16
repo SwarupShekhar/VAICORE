@@ -82,7 +82,7 @@ def export_and_deliver(
             import time
             global _TASK_CACHE
             project_ids_to_check = [str(project_id)]
-            for pid in ["1", "2", "3", "4", "5", "6"]:
+            for pid in ["1", "2", "3", "4", "5", "6", "7"]:
                 if pid not in project_ids_to_check:
                     project_ids_to_check.append(pid)
 
@@ -173,9 +173,11 @@ def export_and_deliver(
                 if annotation.get("was_cancelled"):
                     continue
                 
-                # STRICT ENFORCEMENT: Only export tasks that have been explicitly accepted by a reviewer
-                # This ensures the client only receives verified, high-quality data.
+                # Only export annotations explicitly accepted by a reviewer.
+                # If no reviewer workflow is configured in Label Studio, all annotations
+                # will be skipped here. Set up a review step in LS or remove this gate.
                 if not annotation.get("is_accepted"):
+                    print(f"[export] Skipping annotation id={annotation.get('id')} for {original_filename} — not accepted (is_accepted=False). Configure a reviewer workflow in Label Studio.")
                     continue
                 
                 result = annotation.get("result", [])
@@ -797,7 +799,7 @@ def check_annotation_status(
         headers = _get_ls_headers()
 
         project_ids_to_check = [str(project_id)]
-        for pid in ["1", "2", "3", "4", "5", "6"]:
+        for pid in ["1", "2", "3", "4", "5", "6", "7"]:
             if pid not in project_ids_to_check:
                 project_ids_to_check.append(pid)
 
