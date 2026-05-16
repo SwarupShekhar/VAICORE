@@ -13,8 +13,14 @@ import pandas as pd
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
+
+# Silence Azure SDK HTTP request/response INFO logging — it floods docker logs
+# and buries real transcription/diarization output.
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
 
 # Global lock to ensure only one heavy transcription task runs at a time
 _PROCESSING_LOCK = threading.Lock()
@@ -29,23 +35,11 @@ CLIENT_ROLE_CONFIG = {
 }
 
 CLIENT_PROMPT_CONFIG = {
-    # Whisper prompt acts as vocabulary hint — include domain words exactly as they should be transcribed
-    'DEFAULT': (
-        "नमस्कार, ठीक है, बिल्कुल, समझ गया, एक सेकंड, हाँ जी, "
-        "customer service, loan, EMI, interest rate, processing fee, KYC, "
-        "Aadhaar, PAN card, account number, IFSC, NACH mandate, disbursement, "
-        "foreclosure, outstanding balance, no-dues certificate, NOC, insurance premium, "
-        "Hindi financial services call center."
-    ),
-    'bajaj': (
-        "नमस्कार, ठीक है, बिल्कुल, हाँ जी, एक मिनट, समझ गया, "
-        "Bajaj Finance Limited, Personal Loan, Business Loan, Gold Loan, "
-        "EMI, interest rate, processing fee, prepayment, foreclosure charges, "
-        "KYC, e-KYC, V-KYC, Aadhaar card, PAN card, NACH mandate, ECS, "
-        "disbursement, outstanding balance, overdue amount, bounce charges, "
-        "loan account number, IFSC code, no-dues certificate, NOC, "
-        "Hindi customer service, financial services."
-    ),
+    # Intentionally empty. A prompt biases Whisper's output script/language.
+    # Empty prompt => Whisper auto-detects the spoken language and transcribes
+    # in that language's own native script (Hindi->Devanagari, English->Latin,
+    # Hinglish as spoken). Do NOT add Devanagari or Latin domain phrases here.
+    'DEFAULT': "",
 }
 
 # Rule-based tagging rules
@@ -200,7 +194,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
             "service_leakage": [], "mood": "Neutral", "churn_risk": "Low Risk", "summary": ""
         }
 
-def process_audio(blob_filename: str, client_code: str, language: str = 'hi') -> Dict[str, Any]:
+def process_audio(blob_filename: str, client_code: str, language: str = None) -> Dict[str, Any]:
     """
     Process audio file using OpenAI gpt-4o-transcribe-diarize for high performance.
     """
@@ -290,22 +284,27 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     else:
                         pipeline.to(torch.device("cpu"))
                     import subprocess
-                    temp_wav_path = str(local_audio_path) + ".wav"
+                    temp_wav_path = str(local_audio_path) + ".16k.wav"
                     try:
-                        print("Converting audio to 8kHz WAV for Pyannote...")
+                        print("Converting audio to 16kHz mono PCM WAV for Pyannote...")
                         subprocess.run([
                             'ffmpeg', '-y', '-i', str(local_audio_path),
-                            '-ar', '8000', '-ac', '1', temp_wav_path
+                            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+                            temp_wav_path
                         ], check=True, capture_output=True)
-                        print("Running Pyannote on converted WAV...")
-                        diarization = pipeline(temp_wav_path)
-                        # Cleanup
-                        import os
+                        # Load as an in-memory waveform and hand pyannote the
+                        # tensor directly. Passing a file path makes pyannote
+                        # trust the WAV header duration, but decoders often yield
+                        # a few samples short (e.g. 78895 vs 80000) and pyannote
+                        # hard-fails the chunk assertion. With an in-memory
+                        # tensor pyannote uses the actual decoded sample count.
+                        import torchaudio
+                        waveform, sr = torchaudio.load(temp_wav_path)
+                        print(f"Running Pyannote on waveform ({waveform.shape[1]} samples @ {sr}Hz)...")
+                        diarization = pipeline({"waveform": waveform, "sample_rate": sr})
+                    finally:
                         if os.path.exists(temp_wav_path):
                             os.remove(temp_wav_path)
-                    except Exception as e:
-                        print(f"FFmpeg conversion failed or Pyannote error: {e}. Falling back to original file.")
-                        diarization = pipeline(str(local_audio_path))
                     
                     for turn, _, speaker in diarization.itertracks(yield_label=True):
                         speaker_segments.append({
@@ -343,7 +342,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                     )
                 
-                detected_language = getattr(response, 'language', language or 'hi')
+                detected_language = getattr(response, 'language', None) or 'auto'
                 print(f"Transcription complete. Detected language: {detected_language}")
                 
                 # Adapt Groq response to the rest of the code
@@ -459,14 +458,16 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                 for attempt in range(max_retries):
                     try:
                         with open(local_audio_path, "rb") as f:
-                            response = client.audio.transcriptions.create(
+                            _wkwargs = dict(
                                 file=f,
                                 model="whisper-1",
                                 response_format="verbose_json",
                                 timestamp_granularities=["segment"],
-                                language=language or 'hi',
                                 prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                             )
+                            if language:
+                                _wkwargs["language"] = language
+                            response = client.audio.transcriptions.create(**_wkwargs)
                         break
                     except Exception as api_e:
                         print(f"API fallback attempt {attempt+1} failed: {api_e}")
@@ -475,7 +476,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         else:
                             raise Exception(f"Both local and API transcription failed: {api_e}")
 
-                detected_language = getattr(response, 'language', language or 'hi')
+                detected_language = getattr(response, 'language', None) or 'auto'
                 raw_segments = getattr(response, 'segments', [])
                 current_speaker = "Speaker A"
                 last_end_time = 0
@@ -530,7 +531,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                 
                 segment_data = {
                     'segment_id': f"SEG-{i+1:03d}",
-                    'language': language or detected_language,
+                    'language': detected_language,
                     'start_time': round(s['start'], 2),
                     'end_time': round(s['end'], 2),
                     'speaker': role,
