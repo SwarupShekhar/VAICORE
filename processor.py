@@ -238,7 +238,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             # STEP 1.5: Accurate Diarization with pyannote.audio
             use_pyannote = False
             speaker_segments = []
-            hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_Read_token")
+            hf_token = (os.getenv("HF_TOKEN") or os.getenv("HF_Read_token", "")).strip('"').strip("'")
             
             if hf_token:
                 print("Starting Pyannote Diarization...")
