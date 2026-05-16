@@ -205,7 +205,7 @@ def push_to_labelstudio(
         print(f"Starting Label Studio upload for {client_code}/{original_filename}")
 
         ls_url = os.getenv("LABEL_STUDIO_URL")
-        api_key = os.getenv("LABEL_STUDIO_API_KEY")
+        api_key = os.getenv("LABEL_STUDIO_API_KEY", "").strip('"').strip("'")
         project_id = get_client_project_id(client_code, "audio", "LABEL_STUDIO_PROJECT_ID", "1")
         connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
