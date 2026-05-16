@@ -408,24 +408,26 @@ def push_to_labelstudio(
         except Exception:
             pass
 
-        # ── STEP 5b: Send pre-annotations as annotations ──
+        # ── STEP 5b: Send pre-annotations as predictions ──
         if task_id and predictions_data:
             for pred in predictions_data:
-                ann_payload = {
-                    "result": pred.get("result", [])
+                pred_payload = {
+                    "task": task_id,
+                    "result": pred.get("result", []),
+                    "model_version": pred.get("model_version", "gpt-4o-whisper")
                 }
                 pr = _req.post(
-                    f"{ls_url}/api/tasks/{task_id}/annotations",
-                    json=ann_payload,
+                    f"{ls_url}/api/predictions",
+                    json=pred_payload,
                     headers=headers,
                     timeout=30
                 )
                 if pr.status_code < 300:
-                    print(f"Annotations created for task {task_id} ({len(pred.get('result',[]))} regions)")
+                    print(f"Predictions uploaded for task {task_id} ({len(pred.get('result',[]))} regions)")
                 else:
-                    print(f"Warning: Annotations upload returned {pr.status_code}: {pr.text[:200]}")
+                    print(f"Warning: Predictions upload returned {pr.status_code}: {pr.text[:200]}")
         elif not task_id:
-            print("WARNING: Could not extract task_id — annotations not uploaded!")
+            print("WARNING: Could not extract task_id — predictions not uploaded!")
 
         print(f"Label Studio upload successful. Task ID: {task_id}, Segments: {len(segments)}")
 
