@@ -13,7 +13,6 @@ import pandas as pd
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
 from dotenv import load_dotenv
-from pyannote.audio import Pipeline
 
 load_dotenv()
 
@@ -244,9 +243,10 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             if hf_token:
                 print("Starting Pyannote Diarization...")
                 try:
+                    from pyannote.audio import Pipeline
                     pipeline = Pipeline.from_pretrained(
                         "pyannote/speaker-diarization-3.1",
-                        use_auth_token=hf_token
+                        token=hf_token
                     )
                     import torch
                     if torch.cuda.is_available():
