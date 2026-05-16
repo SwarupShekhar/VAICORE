@@ -32,7 +32,11 @@ def _resolve_token(token: str, url: str) -> str:
     return token
 
 def _ls_headers(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    # Label Studio uses 'Token' for standard API keys and 'Bearer' for JWT tokens
+    if token and token.startswith("eyJ"):
+        return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    else:
+        return {"Authorization": f"Token {token}", "Content-Type": "application/json"}
 
 
 def get_client_project_id(client_code: str, project_type: str, fallback_env_var: str, default_val: str) -> str:
