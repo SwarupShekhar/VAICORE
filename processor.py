@@ -292,10 +292,10 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     import subprocess
                     temp_wav_path = str(local_audio_path) + ".wav"
                     try:
-                        print("Converting audio to 16kHz WAV for Pyannote...")
+                        print("Converting audio to 8kHz WAV for Pyannote...")
                         subprocess.run([
                             'ffmpeg', '-y', '-i', str(local_audio_path),
-                            '-ar', '16000', '-ac', '1', temp_wav_path
+                            '-ar', '8000', '-ac', '1', temp_wav_path
                         ], check=True, capture_output=True)
                         print("Running Pyannote on converted WAV...")
                         diarization = pipeline(temp_wav_path)
