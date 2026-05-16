@@ -97,13 +97,10 @@ def calculate_qa_status(confidence: float) -> str:
         return 'LOW CONFIDENCE'
 
 def filter_segment(text: str, avg_logprob: float) -> bool:
-    """Filter out only empty or extreme hallucination segments. Annotators handle the rest."""
-    if not text or len(text.strip()) == 0:
-        return False
-    # Only drop extreme Whisper hallucinations (repeated noise tokens); keep everything else
-    if avg_logprob is not None and avg_logprob < -3.0:
-        return False
-    return True
+    """Keep every non-empty segment. This is a pre-annotation tool — completeness
+    beats precision; annotators correct text. Dropping on avg_logprob silently
+    deletes real but quiet/accented speech (caused missing 59s-1:20 spans)."""
+    return bool(text and text.strip())
 
 def identify_speaker_roles(segments: List[Dict], client_code: str) -> Dict[str, str]:
     """
@@ -400,7 +397,12 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         if start == 0 and end == 0 and temp_segments:
                             last_end_time = end
                             continue
-                        if temp_segments and temp_segments[-1]["text"].strip() == text.strip():
+                        norm = text.strip()
+                        recent = [seg2["text"].strip() for seg2 in temp_segments[-2:]]
+                        if len(recent) == 2 and recent[0] == norm and recent[1] == norm:
+                            # 3rd+ identical line in a row = Whisper hallucination
+                            # loop. Single/double repeats ("haan ji", "ok") are
+                            # legitimate call speech — keep them.
                             last_end_time = end
                             continue
                         temp_segments.append({
