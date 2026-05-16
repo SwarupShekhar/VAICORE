@@ -92,7 +92,10 @@ def _transcode_to_mp3(input_data: bytes, original_ext: str = ".m4a") -> bytes:
         tmp_in.write(input_data)
         tmp_in_path = tmp_in.name
 
-    tmp_out_path = tmp_in_path.replace(original_ext, ".mp3")
+    # Always a DISTINCT path. When original_ext is already ".mp3",
+    # str.replace produced in == out, so ffmpeg refused (exit 234) and
+    # audio fell back to a broken/404 URL.
+    tmp_out_path = tmp_in_path + ".out.mp3"
     try:
         subprocess.run(
             ['ffmpeg', '-y', '-i', tmp_in_path, '-codec:a', 'libmp3lame', '-qscale:a', '2', tmp_out_path],
