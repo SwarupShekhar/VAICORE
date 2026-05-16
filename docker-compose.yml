@@ -15,7 +15,7 @@ services:
       - vaidikai-network
 
   labelstudio:
-    image: heartexlabs/label-studio:latest
+    image: heartexlabs/label-studio:1.13.1
     ports:
       - "4006:8080"
     volumes:

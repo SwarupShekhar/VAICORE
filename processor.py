@@ -3,7 +3,6 @@ import json
 import time
 import tempfile
 import shutil
-import ssl
 import gc
 import threading
 import uuid
@@ -14,9 +13,7 @@ import pandas as pd
 from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
 from dotenv import load_dotenv
-
-# Fix SSL certificate verification issues for model download
-ssl._create_default_https_context = ssl._create_unverified_context
+from pyannote.audio import Pipeline
 
 load_dotenv()
 
@@ -30,6 +27,11 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), max_retries=0)
 # Format: { 'CLIENT_CODE': {'Agent': 'AgentLabel', 'Customer': 'CustomerLabel'} }
 CLIENT_ROLE_CONFIG = {
     'DEFAULT': {'Agent': 'Speaker 1', 'Customer': 'Speaker 2'},
+}
+
+CLIENT_PROMPT_CONFIG = {
+    'DEFAULT': "Hello, Hinglish conversation, customer service.",
+    'bajaj': "Hello, Bajaj Finance Limited, Personal Loan Department, EMI, Interest Rate, KYC, Aadhaar card, PAN card, Hinglish conversation, customer service.",
 }
 
 # Rule-based tagging rules
@@ -234,6 +236,41 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             with open(local_audio_path, "wb") as download_file:
                 download_file.write(blob_client.download_blob().readall())
             
+            # STEP 1.5: Accurate Diarization with pyannote.audio
+            use_pyannote = False
+            speaker_segments = []
+            hf_token = os.getenv("HF_TOKEN") or os.getenv("HF_Read_token")
+            
+            if hf_token:
+                print("Starting Pyannote Diarization...")
+                try:
+                    pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-3.1",
+                        use_auth_token=hf_token
+                    )
+                    import torch
+                    if torch.cuda.is_available():
+                        pipeline.to(torch.device("cuda"))
+                        print("Using CUDA for Pyannote")
+                    else:
+                        pipeline.to(torch.device("cpu"))
+                        print("Using CPU for Pyannote")
+                        
+                    diarization = pipeline(str(local_audio_path))
+                    
+                    for turn, _, speaker in diarization.itertracks(yield_label=True):
+                        speaker_segments.append({
+                            "start": turn.start,
+                            "end": turn.end,
+                            "speaker": speaker
+                        })
+                    print(f"Diarization complete. Found {len(speaker_segments)} turns.")
+                    use_pyannote = True
+                except Exception as e:
+                    print(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
+            else:
+                print("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
+            
             # STEP 2: Transcribe with Multi-Stage Fallback
             max_retries = 3
             last_error = None
@@ -252,7 +289,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                             response_format="verbose_json",
                             timestamp_granularities=["segment"],
                             language=language if language else None,
-                            prompt="Hello, Bajaj Finance Limited, Personal Loan Department, EMI, Interest Rate, KYC, Aadhaar card, PAN card, Hinglish conversation, customer service."
+                            prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
                         )
                     break
                 except Exception as e:
@@ -267,7 +304,12 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                             from faster_whisper import WhisperModel
                             print("Loading 'large-v3' model for state-of-the-art accuracy...")
                             local_model = WhisperModel("large-v3", device="cpu", compute_type="int8")
-                            segments, info = local_model.transcribe(str(local_audio_path), beam_size=10, language=language if language else None)
+                            segments, info = local_model.transcribe(
+                                str(local_audio_path), 
+                                beam_size=10, 
+                                language=language if language else None,
+                                initial_prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                            )
                             
                             local_segments = []
                             for s in segments:
@@ -293,7 +335,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             raw_segments = getattr(response, 'segments', [])
             temp_segments = []
             
-            # STEP 3: Unified Segment Processing & Gap-based Diarization
+            # STEP 3: Unified Segment Processing & Diarization Mapping
             current_speaker = "Speaker A"
             last_end_time = 0
             for s in raw_segments:
@@ -305,8 +347,22 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                 if avg_logprob is None:
                     avg_logprob = 0.0
                 
-                if start - last_end_time > 1.2:
-                    current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+                if use_pyannote and speaker_segments:
+                    # Find dominant speaker in this time range
+                    dominant_speaker = "Unknown"
+                    max_overlap = 0
+                    for p_seg in speaker_segments:
+                        overlap = min(end, p_seg["end"]) - max(start, p_seg["start"])
+                        if overlap > max_overlap:
+                            max_overlap = overlap
+                            dominant_speaker = p_seg["speaker"]
+                    
+                    if dominant_speaker != "Unknown":
+                        current_speaker = dominant_speaker
+                else:
+                    # Gap-based fallback
+                    if start - last_end_time > 1.2:
+                        current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
                 
                 if filter_segment(text, avg_logprob):
                     # Skip zero-timestamp segments past the first (Whisper hallucination loop)
