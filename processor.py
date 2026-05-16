@@ -307,23 +307,53 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                 print("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
             
             # STEP 2: Transcribe with Local Whisper Large-v3 for maximum accuracy
-            print("Loading 'large-v3' model for state-of-the-art accuracy...")
             try:
-                from faster_whisper import WhisperModel
-                # Download to /app/models which is mapped to persistent storage on Vultr
-                local_model = WhisperModel("large-v3", device="cpu", compute_type="int8", download_root="/app/models")
-                
-                print("Starting transcription with word-level timestamps...")
-                segments, info = local_model.transcribe(
-                    str(local_audio_path),
-                    beam_size=5,
-                    language=language or 'hi',
-                    initial_prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT']),
-                    word_timestamps=True
+                print("Using Groq API for lightning-fast Whisper Large-v3...")
+                from openai import OpenAI
+                groq_api_key = os.getenv("GROQ_API_KEY")
+                if not groq_api_key:
+                    raise Exception("GROQ_API_KEY not found in environment")
+                    
+                groq_client = OpenAI(
+                    api_key=groq_api_key,
+                    base_url="https://api.groq.com/openai/v1"
                 )
                 
-                detected_language = info.language
+                print("Starting transcription with Groq (Whisper Large-v3)...")
+                with open(local_audio_path, "rb") as f:
+                    response = groq_client.audio.transcriptions.create(
+                        file=f,
+                        model="whisper-large-v3",
+                        response_format="verbose_json",
+                        timestamp_granularities=["word"],
+                        language=language or 'hi',
+                        prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                    )
+                
+                detected_language = getattr(response, 'language', language or 'hi')
                 print(f"Transcription complete. Detected language: {detected_language}")
+                
+                # Adapt Groq response to the rest of the code
+                class DummySegment:
+                    def __init__(self, words, avg_logprob=0.0):
+                        self.words = words
+                        self.avg_logprob = avg_logprob
+                
+                class DummyWord:
+                    def __init__(self, word, start, end):
+                        self.word = word
+                        self.start = start
+                        self.end = end
+                
+                words = []
+                for w in getattr(response, 'words', []):
+                    words.append(DummyWord(
+                        w.get('word') if isinstance(w, dict) else w.word, 
+                        w.get('start') if isinstance(w, dict) else w.start, 
+                        w.get('end') if isinstance(w, dict) else w.end
+                    ))
+                
+                segments = [DummySegment(words)]
                 
                 # STEP 3: Align words with Pyannote segments
                 temp_segments = []
