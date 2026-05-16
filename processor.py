@@ -29,8 +29,23 @@ CLIENT_ROLE_CONFIG = {
 }
 
 CLIENT_PROMPT_CONFIG = {
-    'DEFAULT': "Hello, Hinglish conversation, customer service.",
-    'bajaj': "Hello, Bajaj Finance Limited, Personal Loan Department, EMI, Interest Rate, KYC, Aadhaar card, PAN card, Hinglish conversation, customer service.",
+    # Whisper prompt acts as vocabulary hint — include domain words exactly as they should be transcribed
+    'DEFAULT': (
+        "Namaskar, namaste, haan ji, theek hai, ek second, bilkul, samajh gaya, "
+        "customer service, loan, EMI, interest rate, processing fee, KYC, Aadhaar, PAN card, "
+        "account number, IFSC, NACH mandate, disbursement, foreclosure, outstanding balance, "
+        "no-dues certificate, statement, NOC, insurance premium, "
+        "Hinglish, Hindi, financial services call center."
+    ),
+    'bajaj': (
+        "Namaskar, Bajaj Finance Limited, Personal Loan, Business Loan, Gold Loan, "
+        "EMI, interest rate, processing fee, prepayment, foreclosure charges, "
+        "KYC, e-KYC, V-KYC, Aadhaar card, PAN card, NACH mandate, ECS, "
+        "disbursement, outstanding balance, overdue amount, bounce charges, "
+        "haan ji, theek hai, bilkul, ek minute, samajh gaya, "
+        "loan account number, IFSC code, no-dues certificate, NOC, "
+        "Hinglish, Hindi customer service, financial services."
+    ),
 }
 
 # Rule-based tagging rules
@@ -88,11 +103,11 @@ def calculate_qa_status(confidence: float) -> str:
         return 'LOW CONFIDENCE'
 
 def filter_segment(text: str, avg_logprob: float) -> bool:
-    """Filter out low-quality segments."""
+    """Filter out only empty or extreme hallucination segments. Annotators handle the rest."""
     if not text or len(text.strip()) == 0:
         return False
-    # Relaxed filter: Allow short words like 'Ok', 'Ji', 'Yes'
-    if avg_logprob is not None and avg_logprob < -1.5: # Hard filter only on extremely low quality
+    # Only drop extreme Whisper hallucinations (repeated noise tokens); keep everything else
+    if avg_logprob is not None and avg_logprob < -3.0:
         return False
     return True
 
@@ -292,7 +307,6 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
             
             # STEP 2: Transcribe with Multi-Stage Fallback
             max_retries = 3
-            last_error = None
             response = None
             mode = "PRIMARY (whisper-1)"
             
@@ -312,7 +326,6 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                         )
                     break
                 except Exception as e:
-                    last_error = e
                     print(f"Transcription attempt {attempt+1} failed: {e}")
                     if attempt < max_retries - 1:
                         time.sleep(3 * (attempt + 1))
@@ -379,8 +392,8 @@ def process_audio(blob_filename: str, client_code: str, language: str = 'hi') ->
                     if dominant_speaker != "Unknown":
                         current_speaker = dominant_speaker
                 else:
-                    # Gap-based fallback
-                    if start - last_end_time > 1.2:
+                    # Gap-based fallback: 0.8s silence = likely speaker change
+                    if start - last_end_time > 0.8:
                         current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
                 
                 if filter_segment(text, avg_logprob):
