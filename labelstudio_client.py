@@ -753,7 +753,42 @@ def push_clickstream_to_labelstudio(
                 "predictions": [{"result": results, "model_version": "gpt-4o-clickstream"}]
             })
 
-        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=task_payloads, headers=headers, timeout=30)
+        # Bulk /import. This LS version 404s on /import (same as the audio
+        # path) — fall back to per-session POST to /tasks. Per-session errors
+        # are tolerated so one bad session can't fail the whole 500-batch.
+        r = _req.post(
+            f"{ls_url}/api/projects/{project_id}/import",
+            json=task_payloads, headers=headers, timeout=120
+        )
+
+        if r.status_code == 404:
+            print("Clickstream /import returned 404. Falling back to per-session /tasks...")
+            imported = 0
+            first_id = None
+            failed = 0
+            for payload in task_payloads:
+                try:
+                    tr = _req.post(
+                        f"{ls_url}/api/projects/{project_id}/tasks",
+                        json=payload, headers=headers, timeout=60
+                    )
+                    tr.raise_for_status()
+                    imported += 1
+                    if first_id is None:
+                        try:
+                            first_id = tr.json().get("id")
+                        except Exception:
+                            pass
+                except Exception as se:
+                    failed += 1
+                    if failed <= 3:
+                        print(f"  Session import failed: {se}")
+            print(f"Clickstream /tasks fallback: {imported} imported, {failed} failed.")
+            if imported == 0:
+                raise Exception(f"All {len(task_payloads)} clickstream sessions failed to import")
+            return {"status": "success", "task_id": first_id,
+                    "sessions_imported": imported, "sessions_failed": failed}
+
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
