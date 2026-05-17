@@ -550,7 +550,12 @@ def push_jewelry_to_labelstudio(
                 }
             ]
 
-        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=30)
+        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
+        # This LS version 404s on /import — fall back to /tasks (same as the
+        # audio/clickstream paths). Image-path only.
+        if r.status_code == 404:
+            print("Image /import returned 404. Falling back to /tasks...")
+            r = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=task_payload, headers=headers, timeout=60)
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
@@ -614,7 +619,11 @@ def push_form_to_labelstudio(
             ]
         }
 
-        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=30)
+        r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
+        # This LS version 404s on /import — fall back to /tasks. Form-path only.
+        if r.status_code == 404:
+            print("Form /import returned 404. Falling back to /tasks...")
+            r = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=task_payload, headers=headers, timeout=60)
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
@@ -956,6 +965,20 @@ def push_text_transcript_to_labelstudio(
             
             # Import all tasks at once
             r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=all_payloads, headers=headers, timeout=120)
+            # This LS version 404s on /import — fall back to per-task /tasks.
+            if r.status_code == 404:
+                print("Bulk /import returned 404. Falling back to per-task /tasks...")
+                _ok = 0
+                for _p in all_payloads:
+                    try:
+                        _tr = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=_p, headers=headers, timeout=60)
+                        _tr.raise_for_status()
+                        _ok += 1
+                    except Exception as _se:
+                        print(f"  Task import failed: {_se}")
+                if _ok == 0:
+                    raise Exception(f"All {len(all_payloads)} tasks failed to import")
+                return {"status": "success", "tasks_created": _ok}
             r.raise_for_status()
             return {"status": "success", "tasks_created": len(all_payloads)}
 
@@ -1041,6 +1064,10 @@ def push_text_transcript_to_labelstudio(
         }
         
         r = _req.post(f"{ls_url}/api/projects/{project_id}/import", json=[task_payload], headers=headers, timeout=60)
+        # This LS version 404s on /import — fall back to /tasks. Text-path only.
+        if r.status_code == 404:
+            print("Text transcript /import returned 404. Falling back to /tasks...")
+            r = _req.post(f"{ls_url}/api/projects/{project_id}/tasks", json=task_payload, headers=headers, timeout=60)
         r.raise_for_status()
         resp = r.json()
         ids = resp.get('task_ids') or resp.get('ids', [])
