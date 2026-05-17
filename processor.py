@@ -191,6 +191,86 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
             "service_leakage": [], "mood": "Neutral", "churn_risk": "Low Risk", "summary": ""
         }
 
+def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client_code):
+    """Dual-channel call recording: channel == speaker.
+
+    Call-center recordings put agent and customer on separate stereo channels.
+    We split L/R and transcribe each channel in ISOLATION. Benefits:
+      - Perfect, deterministic diarization (no pyannote guessing on mixed mono)
+      - No cross-talk on each channel -> Whisper transcribes far more
+        completely and accurately (cross-talk was the main cause of the
+        missing 59s-1:20 type gaps)
+    Returns (temp_segments, detected_language).
+    """
+    import subprocess as _sp
+    ch_dir = Path(base_temp_dir) / "ch"
+    ch_dir.mkdir(exist_ok=True)
+    left = str(ch_dir / "ch_left.wav")
+    right = str(ch_dir / "ch_right.wav")
+
+    _sp.run([
+        'ffmpeg', '-y', '-i', str(local_audio_path),
+        '-filter_complex', '[0:a]channelsplit=channel_layout=stereo[L][R]',
+        '-map', '[L]', '-ar', '16000', left,
+        '-map', '[R]', '-ar', '16000', right,
+    ], check=True, capture_output=True)
+
+    prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+    detected_language = None
+    merged = []
+    for ch_path, spk in ((left, "Speaker A"), (right, "Speaker B")):
+        try:
+            with open(ch_path, "rb") as f:
+                r = groq_client.audio.transcriptions.create(
+                    file=f,
+                    model="whisper-large-v3",
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
+                    prompt=prompt,
+                )
+        except Exception as e:
+            print(f"Channel {spk} transcription failed: {e}")
+            continue
+        if detected_language is None:
+            detected_language = getattr(r, 'language', None)
+        for seg in (getattr(r, 'segments', []) or []):
+            isd = isinstance(seg, dict)
+            txt = ((seg.get('text') if isd else getattr(seg, 'text', '')) or '').strip()
+            if not txt:
+                continue
+            merged.append({
+                "start": (seg.get('start') if isd else getattr(seg, 'start', 0)) or 0,
+                "end": (seg.get('end') if isd else getattr(seg, 'end', 0)) or 0,
+                "text": txt,
+                "speaker": spk,
+                "avg_logprob": (seg.get('avg_logprob') if isd else getattr(seg, 'avg_logprob', 0.0)) or 0.0,
+            })
+        try:
+            os.remove(ch_path)
+        except Exception:
+            pass
+
+    merged.sort(key=lambda s: s["start"])
+
+    # Merge consecutive same-speaker segments only when there is no real pause
+    # and the bubble has not grown too long (readable bubbles, zero data loss).
+    temp_segments = []
+    for s in merged:
+        if temp_segments:
+            prev = temp_segments[-1]
+            if (prev["speaker"] == s["speaker"]
+                    and s["start"] - prev["end"] <= 1.0
+                    and (prev["end"] - prev["start"]) < 15
+                    and len(prev["text"]) < 240):
+                prev["text"] = (prev["text"] + " " + s["text"]).strip()
+                prev["end"] = s["end"]
+                continue
+        temp_segments.append(dict(s))
+
+    print(f"Dual-channel: {len(merged)} raw -> {len(temp_segments)} bubbles. Lang: {detected_language}")
+    return temp_segments, (detected_language or 'auto')
+
+
 def process_audio(blob_filename: str, client_code: str, language: str = None) -> Dict[str, Any]:
     """
     Process audio file using OpenAI gpt-4o-transcribe-diarize for high performance.
@@ -242,12 +322,29 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
             with open(local_audio_path, "wb") as download_file:
                 download_file.write(blob_client.download_blob().readall())
             
-            # STEP 1.5: Accurate Diarization with pyannote.audio
+            # Detect channel layout. Dual-channel call recordings keep the two
+            # speakers on separate channels -> channel == speaker (perfect
+            # diarization, no cross-talk). Far better than diarizing mixed mono,
+            # so when stereo we skip pyannote entirely.
+            stereo = False
+            try:
+                import subprocess as _pf
+                _pc = _pf.run([
+                    'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                    '-show_entries', 'stream=channels', '-of',
+                    'default=noprint_wrappers=1:nokey=1', str(local_audio_path)
+                ], check=True, capture_output=True, text=True)
+                stereo = int((_pc.stdout.strip() or '1')) >= 2
+            except Exception as _pe:
+                print(f"Channel probe failed: {_pe}; assuming mono.")
+            print(f"Audio channels: {'STEREO (channel=speaker)' if stereo else 'MONO (needs diarization)'}")
+
+            # STEP 1.5: Accurate Diarization with pyannote.audio (MONO only)
             use_pyannote = False
             speaker_segments = []
             hf_token = (os.getenv("HF_TOKEN") or os.getenv("HF_Read_token", "")).strip('"').strip("'")
-            
-            if hf_token:
+
+            if hf_token and not stereo:
                 print("Starting Pyannote Diarization...")
                 try:
                     # Pre-validate token access to gated model before loading heavy pipeline
@@ -313,6 +410,8 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     use_pyannote = True
                 except Exception as e:
                     print(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
+            elif stereo:
+                print("Stereo audio: channel-based speaker separation (pyannote skipped).")
             else:
                 print("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
             
@@ -329,86 +428,93 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     base_url="https://api.groq.com/openai/v1"
                 )
                 
-                print("Starting transcription with Groq (Whisper Large-v3)...")
-                with open(local_audio_path, "rb") as f:
-                    response = groq_client.audio.transcriptions.create(
-                        file=f,
-                        model="whisper-large-v3",
-                        response_format="verbose_json",
-                        timestamp_granularities=["segment"],
-                        prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                if stereo:
+                    # Dual-channel: channel == speaker. No pyannote, no
+                    # cross-talk -> perfect diarization + more complete text.
+                    temp_segments, detected_language = transcribe_dual_channel(
+                        groq_client, local_audio_path, base_temp_dir, client_code
                     )
+                    if not temp_segments:
+                        raise Exception("Dual-channel transcription produced no segments")
+                else:
+                    print("Starting transcription with Groq (Whisper Large-v3)...")
+                    with open(local_audio_path, "rb") as f:
+                        response = groq_client.audio.transcriptions.create(
+                            file=f,
+                            model="whisper-large-v3",
+                            response_format="verbose_json",
+                            timestamp_granularities=["segment"],
+                            prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                        )
 
-                detected_language = getattr(response, 'language', None) or 'auto'
-                print(f"Transcription complete. Detected language: {detected_language}")
+                    detected_language = getattr(response, 'language', None) or 'auto'
+                    print(f"Transcription complete. Detected language: {detected_language}")
 
-                # Single-call segment-level output. Whisper segments cover the
-                # full audio contiguously; absolute timestamps line up with the
-                # pyannote turns computed on the SAME full audio (chunking
-                # broke this alignment and split words mid-utterance).
-                raw_segments = getattr(response, 'segments', []) or []
-                response_text = getattr(response, 'text', '') or ''
+                    # Single-call segment-level output. Whisper segments cover
+                    # the full audio contiguously; absolute timestamps line up
+                    # with the pyannote turns computed on the SAME full audio.
+                    raw_segments = getattr(response, 'segments', []) or []
+                    response_text = getattr(response, 'text', '') or ''
 
-                norm_segments = []
-                for seg in raw_segments:
-                    is_d = isinstance(seg, dict)
-                    norm_segments.append({
-                        "text": ((seg.get('text') if is_d else getattr(seg, 'text', '')) or ''),
-                        "start": ((seg.get('start') if is_d else getattr(seg, 'start', 0)) or 0),
-                        "end": ((seg.get('end') if is_d else getattr(seg, 'end', 0)) or 0),
-                        "avg_logprob": ((seg.get('avg_logprob') if is_d else getattr(seg, 'avg_logprob', 0.0)) or 0.0),
-                    })
-
-                # Last resort: no segments but we have text -> single block so
-                # nothing is ever lost.
-                if not norm_segments and response_text.strip():
-                    norm_segments = [{"text": response_text.strip(), "start": 0, "end": 0, "avg_logprob": 0.0}]
-
-                print(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
-
-                temp_segments = []
-                current_speaker = "Speaker A"
-                last_end_time = 0
-                for seg in norm_segments:
-                    text = (seg["text"] or "").strip()
-                    start = seg["start"]
-                    end = seg["end"]
-                    avg_logprob = seg["avg_logprob"]
-                    if avg_logprob is None:
-                        avg_logprob = 0.0
-
-                    if use_pyannote and speaker_segments:
-                        dominant_speaker = "Unknown"
-                        max_overlap = 0
-                        for p_seg in speaker_segments:
-                            overlap = min(end, p_seg["end"]) - max(start, p_seg["start"])
-                            if overlap > max_overlap:
-                                max_overlap = overlap
-                                dominant_speaker = p_seg["speaker"]
-                        if dominant_speaker != "Unknown":
-                            current_speaker = dominant_speaker
-                    else:
-                        # Gap-based fallback: 0.5s silence = speaker change
-                        if start - last_end_time > 0.5:
-                            current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
-
-                    if filter_segment(text, avg_logprob):
-                        if start == 0 and end == 0 and temp_segments:
-                            last_end_time = end
-                            continue
-                        norm = text.strip()
-                        recent = [seg2["text"].strip() for seg2 in temp_segments[-2:]]
-                        if len(recent) == 2 and recent[0] == norm and recent[1] == norm:
-                            # 3rd+ identical line in a row = Whisper hallucination
-                            # loop. Single/double repeats ("haan ji", "ok") are
-                            # legitimate call speech — keep them.
-                            last_end_time = end
-                            continue
-                        temp_segments.append({
-                            "start": start, "end": end, "text": text,
-                            "speaker": current_speaker, "avg_logprob": avg_logprob
+                    norm_segments = []
+                    for seg in raw_segments:
+                        is_d = isinstance(seg, dict)
+                        norm_segments.append({
+                            "text": ((seg.get('text') if is_d else getattr(seg, 'text', '')) or ''),
+                            "start": ((seg.get('start') if is_d else getattr(seg, 'start', 0)) or 0),
+                            "end": ((seg.get('end') if is_d else getattr(seg, 'end', 0)) or 0),
+                            "avg_logprob": ((seg.get('avg_logprob') if is_d else getattr(seg, 'avg_logprob', 0.0)) or 0.0),
                         })
-                    last_end_time = end
+
+                    # Last resort: no segments but we have text -> single block.
+                    if not norm_segments and response_text.strip():
+                        norm_segments = [{"text": response_text.strip(), "start": 0, "end": 0, "avg_logprob": 0.0}]
+
+                    print(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
+
+                    temp_segments = []
+                    current_speaker = "Speaker A"
+                    last_end_time = 0
+                    for seg in norm_segments:
+                        text = (seg["text"] or "").strip()
+                        start = seg["start"]
+                        end = seg["end"]
+                        avg_logprob = seg["avg_logprob"]
+                        if avg_logprob is None:
+                            avg_logprob = 0.0
+
+                        if use_pyannote and speaker_segments:
+                            dominant_speaker = "Unknown"
+                            max_overlap = 0
+                            for p_seg in speaker_segments:
+                                overlap = min(end, p_seg["end"]) - max(start, p_seg["start"])
+                                if overlap > max_overlap:
+                                    max_overlap = overlap
+                                    dominant_speaker = p_seg["speaker"]
+                            if dominant_speaker != "Unknown":
+                                current_speaker = dominant_speaker
+                        else:
+                            # Gap-based fallback: 0.5s silence = speaker change
+                            if start - last_end_time > 0.5:
+                                current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+
+                        if filter_segment(text, avg_logprob):
+                            if start == 0 and end == 0 and temp_segments:
+                                last_end_time = end
+                                continue
+                            norm = text.strip()
+                            recent = [seg2["text"].strip() for seg2 in temp_segments[-2:]]
+                            if len(recent) == 2 and recent[0] == norm and recent[1] == norm:
+                                # 3rd+ identical line in a row = Whisper
+                                # hallucination loop. Single/double repeats
+                                # ("haan ji", "ok") are legit — keep them.
+                                last_end_time = end
+                                continue
+                            temp_segments.append({
+                                "start": start, "end": end, "text": text,
+                                "speaker": current_speaker, "avg_logprob": avg_logprob
+                            })
+                        last_end_time = end
 
             except Exception as e:
                 print(f"Local Whisper failed: {e}. Falling back to OpenAI whisper-1 API...")
