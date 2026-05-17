@@ -192,68 +192,104 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
         }
 
 def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client_code):
-    """Dual-channel call recording: channel == speaker.
+    """Dual-channel call: transcribe the MIXED audio once, diarize by channel energy.
 
-    Call-center recordings put agent and customer on separate stereo channels.
-    We split L/R and transcribe each channel in ISOLATION. Benefits:
-      - Perfect, deterministic diarization (no pyannote guessing on mixed mono)
-      - No cross-talk on each channel -> Whisper transcribes far more
-        completely and accurately (cross-talk was the main cause of the
-        missing 59s-1:20 type gaps)
+    Transcribing each channel in isolation hallucinates badly: an isolated
+    channel is silent while the other party talks, and Whisper invents text +
+    guesses a random language (Tamil/Telugu on a Hindi call) on silence.
+
+    Instead:
+      1. Transcribe the full MIXED audio once -> full signal, stable language
+         auto-detect, no silence hallucination, best accuracy.
+      2. Split L/R only to MEASURE energy. For each transcribed segment, the
+         louder channel over that window is the speaker. Deterministic, no
+         pyannote, no guessing.
     Returns (temp_segments, detected_language).
     """
     import subprocess as _sp
+    import wave as _wave
+    import array as _array
+    import math as _math
+
+    # 1. Transcribe the full mixed audio once.
+    prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+    with open(local_audio_path, "rb") as f:
+        r = groq_client.audio.transcriptions.create(
+            file=f,
+            model="whisper-large-v3",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+            temperature=0,  # anti-hallucination
+            prompt=prompt,
+        )
+    detected_language = getattr(r, 'language', None) or 'auto'
+    raw = getattr(r, 'segments', []) or []
+    print(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
+
+    # 2. Split channels (energy measurement only — never transcribed).
     ch_dir = Path(base_temp_dir) / "ch"
     ch_dir.mkdir(exist_ok=True)
-    left = str(ch_dir / "ch_left.wav")
-    right = str(ch_dir / "ch_right.wav")
-
+    left = str(ch_dir / "L.wav")
+    right = str(ch_dir / "R.wav")
     _sp.run([
         'ffmpeg', '-y', '-i', str(local_audio_path),
         '-filter_complex', '[0:a]channelsplit=channel_layout=stereo[L][R]',
-        '-map', '[L]', '-ar', '16000', left,
-        '-map', '[R]', '-ar', '16000', right,
+        '-map', '[L]', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', left,
+        '-map', '[R]', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', right,
     ], check=True, capture_output=True)
 
-    prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-    detected_language = None
-    merged = []
-    for ch_path, spk in ((left, "Speaker A"), (right, "Speaker B")):
+    def _load(path):
+        with _wave.open(path, 'rb') as w:
+            sr = w.getframerate()
+            data = w.readframes(w.getnframes())
+        return _array.array('h', data), sr
+
+    Ld, sr = _load(left)
+    Rd, _ = _load(right)
+    for _p in (left, right):
         try:
-            with open(ch_path, "rb") as f:
-                r = groq_client.audio.transcriptions.create(
-                    file=f,
-                    model="whisper-large-v3",
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"],
-                    prompt=prompt,
-                )
-        except Exception as e:
-            print(f"Channel {spk} transcription failed: {e}")
-            continue
-        if detected_language is None:
-            detected_language = getattr(r, 'language', None)
-        for seg in (getattr(r, 'segments', []) or []):
-            isd = isinstance(seg, dict)
-            txt = ((seg.get('text') if isd else getattr(seg, 'text', '')) or '').strip()
-            if not txt:
-                continue
-            merged.append({
-                "start": (seg.get('start') if isd else getattr(seg, 'start', 0)) or 0,
-                "end": (seg.get('end') if isd else getattr(seg, 'end', 0)) or 0,
-                "text": txt,
-                "speaker": spk,
-                "avg_logprob": (seg.get('avg_logprob') if isd else getattr(seg, 'avg_logprob', 0.0)) or 0.0,
-            })
-        try:
-            os.remove(ch_path)
+            os.remove(_p)
         except Exception:
             pass
 
+    def _rms(arr, t0, t1):
+        s0 = max(0, int(t0 * sr))
+        s1 = min(len(arr), int(t1 * sr))
+        if s1 <= s0:
+            return 0.0
+        step = max(1, (s1 - s0) // 4000)  # subsample long windows for speed
+        acc = 0.0
+        cnt = 0
+        for i in range(s0, s1, step):
+            v = arr[i]
+            acc += v * v
+            cnt += 1
+        return _math.sqrt(acc / cnt) if cnt else 0.0
+
+    # 3. Assign speaker per segment by louder channel over its time window.
+    merged = []
+    for seg in raw:
+        isd = isinstance(seg, dict)
+        st = (seg.get('start') if isd else getattr(seg, 'start', 0)) or 0
+        en = (seg.get('end') if isd else getattr(seg, 'end', 0)) or 0
+        txt = ((seg.get('text') if isd else getattr(seg, 'text', '')) or '').strip()
+        if not txt:
+            continue
+        lp = (seg.get('avg_logprob') if isd else getattr(seg, 'avg_logprob', 0.0)) or 0.0
+        el = _rms(Ld, st, en)
+        er = _rms(Rd, st, en)
+        merged.append({
+            "start": st,
+            "end": en,
+            "text": txt,
+            "speaker": "Speaker A" if el >= er else "Speaker B",
+            "avg_logprob": lp,
+        })
+
     merged.sort(key=lambda s: s["start"])
 
-    # Merge consecutive same-speaker segments only when there is no real pause
-    # and the bubble has not grown too long (readable bubbles, zero data loss).
+    # 4. Merge consecutive same-speaker segments when there's no real pause and
+    # the bubble isn't too long (readable bubbles, zero data loss).
     temp_segments = []
     for s in merged:
         if temp_segments:
@@ -267,8 +303,8 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                 continue
         temp_segments.append(dict(s))
 
-    print(f"Dual-channel: {len(merged)} raw -> {len(temp_segments)} bubbles. Lang: {detected_language}")
-    return temp_segments, (detected_language or 'auto')
+    print(f"Channel-energy diarization: {len(merged)} segs -> {len(temp_segments)} bubbles.")
+    return temp_segments, detected_language
 
 
 def process_audio(blob_filename: str, client_code: str, language: str = None) -> Dict[str, Any]:
