@@ -191,7 +191,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
             "service_leakage": [], "mood": "Neutral", "churn_risk": "Low Risk", "summary": ""
         }
 
-def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client_code):
+def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client_code, language=None):
     """Dual-channel call: transcribe the MIXED audio once, diarize by channel energy.
 
     Transcribing each channel in isolation hallucinates badly: an isolated
@@ -213,16 +213,22 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
 
     # 1. Transcribe the full mixed audio once.
     prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+    _kw = dict(
+        model="whisper-large-v3",
+        response_format="verbose_json",
+        timestamp_granularities=["segment"],
+        temperature=0,  # anti-hallucination
+        prompt=prompt,
+    )
+    # Pin the language when the uploader chose one. Auto-detect mis-fires on
+    # Indian-language narrowband telephony (Tamil call -> Kannada/Hindi), and
+    # wrong-language detection is a primary cause of heavy content loss.
+    if language:
+        _kw["language"] = language
+        print(f"Mixed transcription: language pinned to '{language}'")
     with open(local_audio_path, "rb") as f:
-        r = groq_client.audio.transcriptions.create(
-            file=f,
-            model="whisper-large-v3",
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
-            temperature=0,  # anti-hallucination
-            prompt=prompt,
-        )
-    detected_language = getattr(r, 'language', None) or 'auto'
+        r = groq_client.audio.transcriptions.create(file=f, **_kw)
+    detected_language = getattr(r, 'language', None) or (language or 'auto')
     raw = getattr(r, 'segments', []) or []
     print(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
 
@@ -468,22 +474,26 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     # Dual-channel: channel == speaker. No pyannote, no
                     # cross-talk -> perfect diarization + more complete text.
                     temp_segments, detected_language = transcribe_dual_channel(
-                        groq_client, local_audio_path, base_temp_dir, client_code
+                        groq_client, local_audio_path, base_temp_dir, client_code, language
                     )
                     if not temp_segments:
                         raise Exception("Dual-channel transcription produced no segments")
                 else:
                     print("Starting transcription with Groq (Whisper Large-v3)...")
+                    _mkw = dict(
+                        model="whisper-large-v3",
+                        response_format="verbose_json",
+                        timestamp_granularities=["segment"],
+                        temperature=0,
+                        prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                    )
+                    if language:
+                        _mkw["language"] = language
+                        print(f"Mono transcription: language pinned to '{language}'")
                     with open(local_audio_path, "rb") as f:
-                        response = groq_client.audio.transcriptions.create(
-                            file=f,
-                            model="whisper-large-v3",
-                            response_format="verbose_json",
-                            timestamp_granularities=["segment"],
-                            prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-                        )
+                        response = groq_client.audio.transcriptions.create(file=f, **_mkw)
 
-                    detected_language = getattr(response, 'language', None) or 'auto'
+                    detected_language = getattr(response, 'language', None) or (language or 'auto')
                     print(f"Transcription complete. Detected language: {detected_language}")
 
                     # Single-call segment-level output. Whisper segments cover
