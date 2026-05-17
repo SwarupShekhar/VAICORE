@@ -1,6 +1,8 @@
 <View>
+  <Header value="Call Review &amp; Correction"/>
   <Audio name="audio" value="$audio" zoom="true" hotkey="space"/>
 
+  <Header value="1. Speaker segments — draw to ADD a missed part, drag edges to fix timing, delete wrong ones, change speaker, edit text per segment"/>
   <Labels name="speaker" toName="audio">
     <Label value="Agent" background="#2196F3"/>
     <Label value="Customer" background="#4CAF50"/>
@@ -12,25 +14,13 @@
     <Label value="Interviewee" background="#607D8B"/>
     <Label value="Speaker 1" background="#3F51B5"/>
     <Label value="Speaker 2" background="#009688"/>
+    <Label value="Unknown" background="#9E9E9E"/>
     <Label value="AI" background="#E91E63"/>
   </Labels>
-  <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Edit transcript..." rows="2" editable="true"/>
+  <TextArea name="transcript" toName="audio" perRegion="true" placeholder="Edit transcript for this segment..." rows="2" editable="true"/>
 
-  <Header value="Conversation"/>
-  <Paragraphs name="dialogue" value="$dialogue" layout="dialogue" nameKey="author" textKey="text"/>
-  <ParagraphLabels name="labels" toName="dialogue">
-    <Label value="Agent" background="#2196F3"/>
-    <Label value="Customer" background="#4CAF50"/>
-    <Label value="Teacher" background="#FF9800"/>
-    <Label value="Student" background="#9C27B0"/>
-    <Label value="Doctor" background="#F44336"/>
-    <Label value="Patient" background="#00BCD4"/>
-    <Label value="Interviewer" background="#795548"/>
-    <Label value="Interviewee" background="#607D8B"/>
-    <Label value="Speaker 1" background="#3F51B5"/>
-    <Label value="Speaker 2" background="#009688"/>
-    <Label value="AI" background="#E91E63"/>
-  </ParagraphLabels>
+  <Header value="2. Full Corrected Transcript (optional override) — if the AI segments are too rough, fix the whole transcript here. KEEP the [MM:SS - MM:SS] prefix on each line to preserve timestamps. When filled, this REPLACES the segments above on export."/>
+  <TextArea name="full_transcript" toName="audio" rows="14" editable="true" maxSubmissions="1" placeholder="One line per turn, keep the time prefix, e.g.&#10;[00:03 - 00:08] Agent: namaste sir...&#10;[00:09 - 00:14] Customer: haan ji boliye...&#10;(A new line with no [..] prefix gets the previous line's end time.)"/>
 
   <Header value="Review Status (Admin/Reviewer Use Only)"/>
   <Choices name="review_status" toName="audio" choice="single" showInline="true">

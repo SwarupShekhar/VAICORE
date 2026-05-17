@@ -283,25 +283,38 @@ def export_and_deliver(
                     })
                 elif is_audio:
                     regions = {}
+                    full_override = ""
                     for r_item in result:
-                        rid = r_item.get("id")
-                        pid = r_item.get("parentID")
+                        fn = r_item.get("from_name", "")
                         val = r_item.get("value", {})
                         rtype = r_item.get("type")
 
+                        # Free-form full-transcript override (authoritative when filled)
+                        if fn == "full_transcript":
+                            txts = val.get("text", [])
+                            full_override = (txts[0] if txts else "").strip()
+                            continue
+                        # Non-region controls — not part of segment building
+                        if fn == "review_status" or rtype == "choices":
+                            continue
+
+                        rid = r_item.get("id")
+                        pid = r_item.get("parentID")
                         target_id = pid if pid else rid
+                        if not target_id:
+                            continue
                         if target_id.endswith("_t"):
                             target_id = target_id[:-2]
 
                         if target_id not in regions:
                             regions[target_id] = {
-                                "start": val.get("start", 0), 
-                                "end": val.get("end", 0), 
-                                "speaker": "Unknown", 
-                                "transcript": "", 
+                                "start": val.get("start", 0),
+                                "end": val.get("end", 0),
+                                "speaker": "Unknown",
+                                "transcript": "",
                                 "language": task_lang
                             }
-                        
+
                         if rtype == "labels":
                             labels = val.get("labels", [])
                             regions[target_id]["speaker"] = labels[0] if labels else "Unknown"
@@ -311,19 +324,56 @@ def export_and_deliver(
                             texts = val.get("text", [])
                             regions[target_id]["transcript"] = texts[0] if texts else ""
 
-                    for rid, data in regions.items():
-                        if not data["transcript"].strip():
-                            continue
-                        duration = round(data["end"] - data["start"], 3)
-                        segments.append({
-                            "Speaker": data["speaker"],
-                            "Start Time (s)": round(data["start"], 3),
-                            "End Time (s)": round(data["end"], 3),
-                            "Duration (s)": duration,
-                            "Transcript": data["transcript"],
-                            "Language": data["language"],
-                            "Audio File": original_filename
-                        })
+                    if full_override:
+                        # Annotator rewrote the whole transcript — it wins over
+                        # the per-segment regions. Lines prefixed with
+                        # [MM:SS - MM:SS] keep their timestamps; a line without
+                        # the prefix inherits the previous line's end time.
+                        import re as _re
+                        _ts_re = _re.compile(
+                            r'^\[\s*(\d+):(\d{2})\s*-\s*(\d+):(\d{2})\s*\]\s*([^:]{1,40}):\s*(.+)$')
+                        _plain_re = _re.compile(r'^([^:]{1,40}):\s*(.+)$')
+                        _prev_end = 0.0
+                        for line in full_override.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            mt = _ts_re.match(line)
+                            if mt:
+                                st = int(mt.group(1)) * 60 + int(mt.group(2))
+                                en = int(mt.group(3)) * 60 + int(mt.group(4))
+                                spk = mt.group(5).strip()
+                                txt = mt.group(6).strip()
+                            else:
+                                mp = _plain_re.match(line)
+                                spk, txt = (mp.group(1).strip(), mp.group(2).strip()) if mp else ("Unknown", line)
+                                st = _prev_end
+                                en = _prev_end
+                            dur = round(en - st, 3)
+                            segments.append({
+                                "Speaker": spk,
+                                "Start Time (s)": round(st, 3),
+                                "End Time (s)": round(en, 3),
+                                "Duration (s)": dur if dur > 0 else 0,
+                                "Transcript": txt,
+                                "Language": task_lang,
+                                "Audio File": original_filename
+                            })
+                            _prev_end = en
+                    else:
+                        for rid, data in regions.items():
+                            if not data["transcript"].strip():
+                                continue
+                            duration = round(data["end"] - data["start"], 3)
+                            segments.append({
+                                "Speaker": data["speaker"],
+                                "Start Time (s)": round(data["start"], 3),
+                                "End Time (s)": round(data["end"], 3),
+                                "Duration (s)": duration,
+                                "Transcript": data["transcript"],
+                                "Language": data["language"],
+                                "Audio File": original_filename
+                            })
                 elif is_transcript:
                     dialogue = task_data.get("dialogue", [])
                     label_map = {}

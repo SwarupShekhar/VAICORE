@@ -324,32 +324,28 @@ def push_to_labelstudio(
                 }
             })
 
-        # 3. dialogue ParagraphLabels — allows editing the Agent/Customer tags on bubbles
-        for i, segment in enumerate(segments):
-            speaker_raw = segment.get('speaker', 'Unknown')
-            label = speaker_to_label.get(speaker_raw, role_labels[0])
-            
-            result.append({
-                "id": f"p_{i}",
-                "from_name": "labels",
-                "to_name": "dialogue",
-                "type": "paragraphlabels",
-                "value": {
-                    "start": str(i),
-                    "end": str(i),
-                    "paragraphlabels": [label]
-                }
-            })
-
-        # Build dialogue for Paragraphs tag
+        # Build dialogue (kept in task data only for legacy/other projects;
+        # the editable surface is the audio regions above, not Paragraphs).
         dialogue = []
-        for i, segment in enumerate(segments):
+        full_lines = []
+        for segment in segments:
             speaker_raw = segment.get('speaker', 'Unknown')
             label = speaker_to_label.get(speaker_raw, role_labels[0])
-            dialogue.append({
-                "author": label,
-                "text": segment.get("transcript", "")
-            })
+            txt = segment.get("transcript", "")
+            st = int(round(float(segment.get("start_time", 0) or 0)))
+            en = int(round(float(segment.get("end_time", 0) or 0)))
+            ts = f"[{st // 60:02d}:{st % 60:02d} - {en // 60:02d}:{en % 60:02d}]"
+            dialogue.append({"author": label, "text": txt})
+            full_lines.append(f"{ts} {label}: {txt}")
+
+        # Seed the free-form full-transcript override so annotators start from
+        # the AI text and can rewrite it wholesale when segmentation is rough.
+        result.append({
+            "from_name": "full_transcript",
+            "to_name": "audio",
+            "type": "textarea",
+            "value": {"text": ["\n".join(full_lines)]}
+        })
 
         # STEP 5: Import task with annotations embedded.
         # Embedding annotations in the import payload is the only reliable way
