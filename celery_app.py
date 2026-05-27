@@ -16,4 +16,5 @@ celery.conf.update(
     timezone="UTC",
     enable_utc=True,
     broker_connection_retry_on_startup=True,
+    imports=("tasks",),
 )

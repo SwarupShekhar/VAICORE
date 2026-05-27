@@ -38,6 +38,14 @@ from upload_log_db import (
     update_log_status,
     delete_log_entry
 )
+from tasks import (
+    task_run_full_pipeline,
+    task_run_jewelry_pipeline,
+    task_run_form_pipeline,
+    task_run_clickstream_pipeline,
+    task_run_transcript_pipeline,
+    task_run_zip_batch_pipeline
+)
 
 async def get_project_id_for_file(client_code: str, filename: str) -> str:
     try:
@@ -446,7 +454,6 @@ async def logout():
 
 @app.post("/api/upload-via-token")
 async def upload_file_via_token(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     upload_token: str = Form(...),
     language: str = Form(""),
@@ -465,12 +472,11 @@ async def upload_file_via_token(
 
     # Re-use the same upload logic by calling through the internal pipeline
     # We pass client_code as a verified value, bypassing session check
-    return await _run_upload_pipeline(background_tasks, file, client_code, language, category)
+    return await _run_upload_pipeline(file, client_code, language, category)
 
 
 @app.post("/api/upload")
 async def upload_file(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     client_code: str = Form(...),
     language: str = Form(""),
@@ -478,10 +484,10 @@ async def upload_file(
     vaicore_session: str = Cookie(None),
 ):
     await verify_session_client(client_code, vaicore_session)
-    return await _run_upload_pipeline(background_tasks, file, client_code, language, category)
+    return await _run_upload_pipeline(file, client_code, language, category)
 
 
-async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFile, client_code: str, language: str, category: str = "auto"):
+async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str, category: str = "auto"):
 
 
     allowed_types = [
@@ -593,8 +599,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
     
     # 1. Check for ZIP batch
     if is_zip:
-        background_tasks.add_task(
-            run_zip_batch_pipeline,
+        task_run_zip_batch_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             original_filename=safe_filename,
@@ -604,8 +609,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
         )
     # 2. Check for EXPLICIT category overrides from upload dropdown selector
     elif category == "jewelry" or category == "housing" or category == "business":
-        background_tasks.add_task(
-            run_jewelry_pipeline,
+        task_run_jewelry_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             original_filename=safe_filename,
@@ -613,8 +617,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             force_project_type=category,
         )
     elif category == "audio":
-        background_tasks.add_task(
-            run_full_pipeline,
+        task_run_full_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             language=language,
@@ -622,24 +625,21 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             timestamp=timestamp,
         )
     elif category == "form":
-        background_tasks.add_task(
-            run_form_pipeline,
+        task_run_form_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             original_filename=safe_filename,
             timestamp=timestamp,
         )
     elif category == "transcript":
-        background_tasks.add_task(
-            run_transcript_pipeline,
+        task_run_transcript_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             original_filename=safe_filename,
             timestamp=timestamp,
         )
     elif category == "clickstream":
-        background_tasks.add_task(
-            run_clickstream_pipeline,
+        task_run_clickstream_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             original_filename=safe_filename,
@@ -649,8 +649,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
     else:
         # A. Dispatch Audio Files
         if file.content_type in audio_types or is_audio_by_extension:
-            background_tasks.add_task(
-                run_full_pipeline,
+            task_run_full_pipeline.delay(
                 blob_filename=blob_name,
                 client_code=client_code,
                 language=language,
@@ -663,8 +662,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             or any(ext in filename_lower for ext in [".pdf", ".doc", ".docx"])
             or any(keyword in filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"])
         ):
-            background_tasks.add_task(
-                run_form_pipeline,
+            task_run_form_pipeline.delay(
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
@@ -676,8 +674,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             or (file.content_type in ["application/json", "text/csv"] and not any(k in filename_lower for k in ["transcript", "conversation", "dialogue", "chat"]))
             or (any(ext in filename_lower for ext in [".json", ".csv", ".xlsx", ".xls"]) and any(k in filename_lower for k in ["clickstream", "activity", "events", "log"]))
         ):
-            background_tasks.add_task(
-                run_clickstream_pipeline,
+            task_run_clickstream_pipeline.delay(
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
@@ -689,8 +686,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             or any(ext in filename_lower for ext in [".txt", ".xlsx", ".xls", ".csv", ".tsv"])
             or file.content_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
-            background_tasks.add_task(
-                run_transcript_pipeline,
+            task_run_transcript_pipeline.delay(
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
@@ -698,8 +694,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
             )
         # E. Dispatch Images
         elif file.content_type in image_types or any(ext in filename_lower for ext in [".jpg", ".jpeg", ".png", ".webp"]):
-            background_tasks.add_task(
-                run_jewelry_pipeline,
+            task_run_jewelry_pipeline.delay(
                 blob_filename=blob_name,
                 client_code=client_code,
                 original_filename=safe_filename,
@@ -2074,42 +2069,42 @@ async def run_zip_batch_pipeline(
                 data_extensions = ['.json', '.csv']
 
                 if any(sub_filename_lower.endswith(ext) for ext in audio_extensions):
-                    asyncio.create_task(run_full_pipeline(
+                    task_run_full_pipeline.delay(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         language="en",
                         original_filename=sub_safe_filename,
                         timestamp=sub_timestamp
-                    ))
+                    )
                 elif any(ext in sub_filename_lower for ext in doc_extensions) or any(keyword in sub_filename_lower for keyword in ["form", "invoice", "aadhaar", "pan", "kyc", "personal"]):
-                    asyncio.create_task(run_form_pipeline(
+                    task_run_form_pipeline.delay(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         original_filename=sub_safe_filename,
                         timestamp=sub_timestamp
-                    ))
+                    )
                 elif any(keyword in sub_filename_lower for keyword in ["transcript", "conversation", "dialogue", "chat", "talk"]) or sub_filename_lower.endswith(".txt"):
-                    asyncio.create_task(run_transcript_pipeline(
+                    task_run_transcript_pipeline.delay(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         original_filename=sub_safe_filename,
                         timestamp=sub_timestamp
-                    ))
+                    )
                 elif any(sub_filename_lower.endswith(ext) for ext in data_extensions) or "clickstream" in sub_filename_lower:
-                    asyncio.create_task(run_clickstream_pipeline(
+                    task_run_clickstream_pipeline.delay(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         original_filename=sub_safe_filename,
                         timestamp=sub_timestamp
-                    ))
+                    )
                 elif any(sub_filename_lower.endswith(ext) for ext in image_extensions):
-                    asyncio.create_task(run_jewelry_pipeline(
+                    task_run_jewelry_pipeline.delay(
                         blob_filename=sub_blob_name,
                         client_code=client_code,
                         original_filename=sub_safe_filename,
                         timestamp=sub_timestamp,
                         force_project_type=category,
-                    ))
+                    )
                 else:
                     print(f"Unknown extension for {sub_safe_filename}, uploaded without processing.")
 

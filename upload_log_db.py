@@ -10,6 +10,8 @@ LEGACY_STATUS_MAP = {
     "Failed (Audio)": "Failed",
     "Failed (Label Studio)": "Failed", 
     "Interrupted (System Crash)": "Failed",
+    "dead_letter": "Failed",
+    "Dead Letter": "Failed",
     None: "Uploaded",
 }
 
