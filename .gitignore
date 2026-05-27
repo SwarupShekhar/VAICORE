@@ -36,3 +36,4 @@ coverage.xml
 weightestimation.md
 collateral_signatures.json
 
+.env.example
