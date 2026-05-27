@@ -184,12 +184,12 @@ class UploadLog(Base):
         BigInteger, nullable=False
     )
     status: Mapped[JobStatus] = mapped_column(
-        Enum(JobStatus, name="job_status_enum", native_enum=True),
+        Enum(JobStatus, name="job_status_enum", native_enum=True, values_callable=lambda x: [e.value for e in x]),
         default=JobStatus.UPLOADED,
         nullable=False,
     )
     category: Mapped[JobCategory] = mapped_column(
-        Enum(JobCategory, name="job_category_enum", native_enum=True),
+        Enum(JobCategory, name="job_category_enum", native_enum=True, values_callable=lambda x: [e.value for e in x]),
         default=JobCategory.AUTO,
         nullable=False,
     )
