@@ -19,6 +19,8 @@ services:
         condition: service_started
       postgres:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     networks:
       - vaidikai-network
 
@@ -79,9 +81,47 @@ services:
     networks:
       - vaidikai-network
 
+  valkey:
+    image: valkey/valkey:7.2-alpine
+    container_name: vaidikai-valkey
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    networks:
+      - vaidikai-network
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    build: .
+    command: celery -A celery_app.celery worker --loglevel=info --concurrency=2
+    env_file:
+      - .env
+    environment:
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - .:/app
+      - /tmp/vaidikai:/tmp/vaidikai
+      - /opt/vaidikai-data/whisper_models:/app/models
+      - /opt/vaidikai-data/hf_cache:/root/.cache/huggingface
+    depends_on:
+      valkey:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: always
+    networks:
+      - vaidikai-network
+
 networks:
   vaidikai-network:
     driver: bridge
 
 volumes:
   postgres_data:
+  valkey_data:

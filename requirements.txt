@@ -21,3 +21,6 @@ pyannote.audio
 asyncpg==0.29.0
 sqlalchemy[asyncio]==2.0.30
 alembic==1.13.1
+celery[redis]==5.3.6
+valkey==5.0.1
+pydub==0.25.1
