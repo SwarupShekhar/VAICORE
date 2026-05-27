@@ -15,7 +15,10 @@ services:
       - /opt/vaidikai-data/hf_cache:/root/.cache/huggingface
     restart: always
     depends_on:
-      - labelstudio
+      labelstudio:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     networks:
       - vaidikai-network
 
@@ -54,6 +57,31 @@ services:
     networks:
       - vaidikai-network
 
+  postgres:
+    image: postgres:15.6-alpine
+    container_name: vaidikai-postgres
+    restart: unless-stopped
+    ports:
+      - "4020:5432"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vaidikai-network
+
 networks:
   vaidikai-network:
     driver: bridge
+
+volumes:
+  postgres_data:
