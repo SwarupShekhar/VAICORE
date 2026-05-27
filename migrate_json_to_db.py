@@ -4,7 +4,32 @@ from datetime import datetime
 from sqlalchemy import select
 from database import get_db_session
 from models import Client, ClientDownloadToken, UploadLog, JobStatus, JobCategory
-from upload_log_db import LEGACY_STATUS_MAP
+
+LEGACY_STATUS_MAP = {
+    "Completed": "Delivered",
+    "Failed (Audio)": "Failed",
+    "Failed (Label Studio)": "Failed",
+    "Interrupted (System Crash)": "Failed",
+    "DELIVERED": "Delivered",
+    "PROCESSING": "Processing",
+    "TRANSCRIBING": "Transcribing",
+    "IN_REVIEW": "In Review",
+    "UPLOADED": "Uploaded",
+    "ERROR": "Error",
+    "FAILED": "Failed",
+    None: "Uploaded",
+}
+
+LEGACY_CATEGORY_MAP = {
+    "AUDIO": "audio",
+    "JEWELRY": "jewelry",
+    "HOUSING": "housing",
+    "BUSINESS": "business",
+    "FORM": "form",
+    "CLICKSTREAM": "clickstream",
+    "TRANSCRIPT": "transcript",
+    "AUTO": "auto",
+}
 
 async def migrate_data():
     print("Starting data migration...")
@@ -135,6 +160,7 @@ async def migrate_data():
                 status_enum = JobStatus(entry_status) if entry_status else JobStatus.UPLOADED
 
                 category_str = entry.get("category")
+                category_str = LEGACY_CATEGORY_MAP.get(category_str, category_str)
                 category_enum = JobCategory(category_str) if category_str else JobCategory.AUTO
 
                 new_log = UploadLog(
