@@ -28,11 +28,22 @@ from labelstudio_client import (
     get_client_project_id
 )
 
-def get_project_id_for_file(client_code: str, filename: str) -> str:
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from database import get_db_session
+from models import Client, ClientDownloadToken
+from upload_log_db import (
+    load_upload_log,
+    append_upload_log,
+    update_log_status,
+    delete_log_entry
+)
+
+async def get_project_id_for_file(client_code: str, filename: str) -> str:
     try:
-        logs = load_upload_log()
+        logs = await load_upload_log(client_code=client_code)
         for log in reversed(logs):
-            if log.get("client_code") == client_code and log.get("filename") == filename:
+            if log.get("filename") == filename:
                 cat = log.get("category")
                 if cat == "audio":
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_AUDIO_PROJECT_ID", "1")
@@ -88,36 +99,7 @@ AZURE_STORAGE_ACCOUNT_KEY = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
-CLIENTS_FILE = Path(__file__).parent / "clients.json"
-
-# File-level locks — protect concurrent read-modify-write on flat-file state
-_LOG_LOCK = threading.Lock()
-_CLIENTS_LOCK = threading.Lock()
-
-def _load_upload_log_no_lock() -> list:
-    try:
-        with open("upload_log.json", "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-def _save_upload_log_no_lock(logs: list):
-    with open("upload_log.json", "w") as f:
-        json.dump(logs, f, indent=2)
-
-def load_upload_log() -> list:
-    with _LOG_LOCK:
-        return _load_upload_log_no_lock()
-
-def save_upload_log(logs: list):
-    with _LOG_LOCK:
-        _save_upload_log_no_lock(logs)
-
-def append_upload_log(entry: dict):
-    with _LOG_LOCK:
-        logs = _load_upload_log_no_lock()
-        logs.append(entry)
-        _save_upload_log_no_lock(logs)
+# Upload log operations are now fully managed in PostgreSQL via upload_log_db module
 
 LANGUAGE_MAP = {
     'hi': 'Hindi',
@@ -157,22 +139,133 @@ _INVALID_LINK_HTML = """<!DOCTYPE html>
 </html>"""
 
 
-def load_clients() -> dict:
-    with _CLIENTS_LOCK:
-        if not CLIENTS_FILE.exists():
-            return {}
-        with open(CLIENTS_FILE) as f:
-            return json.load(f)
+async def load_clients() -> dict:
+    async with get_db_session() as session:
+        stmt = select(Client)
+        result = await session.execute(stmt)
+        db_clients = result.scalars().all()
+        
+        client_dict = {}
+        for c in db_clients:
+            dt_stmt = select(ClientDownloadToken).where(ClientDownloadToken.client_id == c.id)
+            dt_result = await session.execute(dt_stmt)
+            db_tokens = dt_result.scalars().all()
+            
+            download_tokens_dict = {}
+            for t in db_tokens:
+                download_tokens_dict[t.download_token] = {
+                    "blob_path": t.blob_path,
+                    "label": t.label,
+                    "created_at": t.created_at.isoformat() if t.created_at else None,
+                    "expires_at": t.expires_at.isoformat() if t.expires_at else None,
+                }
+            
+            key = c.access_token or str(c.id)
+            client_dict[key] = {
+                "client_code": c.client_code,
+                "client_name": c.client_name,
+                "active": c.active,
+                "created_at": c.created_at.strftime("%Y-%m-%d") if c.created_at else None,
+                "contact_email": c.contact_email,
+                "upload_token": c.upload_token,
+                "download_tokens": download_tokens_dict
+            }
+        return client_dict
 
 
-def save_clients(clients: dict):
-    with _CLIENTS_LOCK:
-        with open(CLIENTS_FILE, "w") as f:
-            json.dump(clients, f, indent=2)
+async def save_clients(clients_dict: dict):
+    async with get_db_session() as session:
+        stmt = select(Client)
+        result = await session.execute(stmt)
+        db_clients = result.scalars().all()
+        db_clients_by_code = {c.client_code: c for c in db_clients}
+        
+        incoming_codes = set()
+        
+        for access_token, data in clients_dict.items():
+            client_code = data["client_code"]
+            incoming_codes.add(client_code)
+            
+            client = db_clients_by_code.get(client_code)
+            
+            if not client:
+                client = Client(
+                    client_code=client_code,
+                    client_name=data.get("client_name", ""),
+                    contact_email=data.get("contact_email"),
+                    active=data.get("active", True),
+                    access_token=access_token,
+                    upload_token=data.get("upload_token"),
+                    role_labels=data.get("role_labels", ["Agent", "Customer"]),
+                    project_ids=data.get("project_ids", {})
+                )
+                session.add(client)
+                await session.flush()
+            else:
+                client.client_name = data.get("client_name", client.client_name)
+                client.contact_email = data.get("contact_email", client.contact_email)
+                client.active = data.get("active", client.active)
+                client.access_token = access_token
+                client.upload_token = data.get("upload_token", client.upload_token)
+                if "project_ids" in data:
+                    client.project_ids = data["project_ids"]
+                if "role_labels" in data:
+                    client.role_labels = data["role_labels"]
+                    
+            dt_stmt = select(ClientDownloadToken).where(ClientDownloadToken.client_id == client.id)
+            dt_result = await session.execute(dt_stmt)
+            db_tokens = dt_result.scalars().all()
+            db_tokens_by_val = {t.download_token: t for t in db_tokens}
+            
+            incoming_tokens = data.get("download_tokens", {})
+            
+            for token_val, token_data in incoming_tokens.items():
+                token_obj = db_tokens_by_val.get(token_val)
+                
+                from datetime import datetime
+                created_at_dt = None
+                if token_data.get("created_at"):
+                    try:
+                        created_at_dt = datetime.fromisoformat(token_data["created_at"])
+                    except ValueError:
+                        pass
+                        
+                expires_at_dt = None
+                if token_data.get("expires_at"):
+                    try:
+                        expires_at_dt = datetime.fromisoformat(token_data["expires_at"])
+                    except ValueError:
+                        pass
+                
+                if not token_obj:
+                    token_obj = ClientDownloadToken(
+                        client_id=client.id,
+                        download_token=token_val,
+                        blob_path=token_data.get("blob_path", ""),
+                        label=token_data.get("label"),
+                        created_at=created_at_dt or datetime.utcnow(),
+                        expires_at=expires_at_dt
+                    )
+                    session.add(token_obj)
+                else:
+                    token_obj.blob_path = token_data.get("blob_path", token_obj.blob_path)
+                    token_obj.label = token_data.get("label", token_obj.label)
+                    if expires_at_dt:
+                        token_obj.expires_at = expires_at_dt
+                        
+            for token_val in db_tokens_by_val:
+                if token_val not in incoming_tokens:
+                    await session.delete(db_tokens_by_val[token_val])
+                    
+        for client_code, client in db_clients_by_code.items():
+            if client_code not in incoming_codes:
+                await session.delete(client)
+                
+        await session.commit()
 
 
-def get_valid_client_codes() -> set:
-    return {v["client_code"] for v in load_clients().values() if v.get("active")}
+async def get_valid_client_codes() -> set:
+    return {v["client_code"] for v in (await load_clients()).values() if v.get("active")}
 
 
 def _admin_token() -> str:
@@ -188,7 +281,7 @@ async def verify_session_client(client_code: str, session_cookie: str | None) ->
     """Enforce strict separation: validating the active cookie belongs to the requested client."""
     if not session_cookie:
         raise HTTPException(status_code=401, detail="Session cookie required")
-    clients = load_clients()
+    clients = await load_clients()
     entry = clients.get(session_cookie)
     if not entry or not entry.get("active") or entry["client_code"] != client_code:
         raise HTTPException(status_code=403, detail="Access denied: Client code mismatch")
@@ -230,7 +323,7 @@ async def health_check():
 @app.get("/access/{token}")
 async def access(token: str):
     """Legacy internal access — redirects to Project Manager dashboard."""
-    clients = load_clients()
+    clients = await load_clients()
     entry = clients.get(token)
     if not entry or not entry.get("active"):
         return HTMLResponse(content=_INVALID_LINK_HTML, status_code=403)
@@ -248,7 +341,7 @@ async def access(token: str):
 @app.get("/upload/{upload_token}")
 async def client_upload_page(upload_token: str):
     """Client-facing upload page — no login required, just a valid upload token."""
-    clients = load_clients()
+    clients = await load_clients()
     # Search all clients for this upload_token
     matched = None
     for token, entry in clients.items():
@@ -263,7 +356,7 @@ async def client_upload_page(upload_token: str):
 @app.get("/api/upload-token-info/{upload_token}")
 async def upload_token_info(upload_token: str):
     """Returns client info for a given upload token (used by client_upload.html)."""
-    clients = load_clients()
+    clients = await load_clients()
     for token, entry in clients.items():
         if entry.get("upload_token") == upload_token and entry.get("active"):
             return {
@@ -277,7 +370,7 @@ async def upload_token_info(upload_token: str):
 @app.get("/download/{download_token}")
 async def client_download_file(download_token: str):
     """Admin-generated download link. Validates token and serves the SAS redirect."""
-    clients = load_clients()
+    clients = await load_clients()
     for token, entry in clients.items():
         dl_tokens = entry.get("download_tokens", {})
         if download_token in dl_tokens:
@@ -300,12 +393,12 @@ async def client_download_file(download_token: str):
 async def generate_upload_link(token: str, vaicore_admin: str = Cookie(None)):
     """Generate or regenerate a client's upload token."""
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
     upload_token = secrets.token_urlsafe(32)
     clients[token]["upload_token"] = upload_token
-    save_clients(clients)
+    await save_clients(clients)
     return {"upload_token": upload_token, "upload_url": f"/upload/{upload_token}"}
 
 
@@ -318,7 +411,7 @@ async def generate_download_link(
 ):
     """Generate a one-time download link for a specific delivered file."""
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
     download_token = secrets.token_urlsafe(32)
@@ -329,7 +422,7 @@ async def generate_download_link(
         "label": label or blob_path.split("/")[-1],
         "created_at": datetime.utcnow().isoformat(),
     }
-    save_clients(clients)
+    await save_clients(clients)
     return {"download_token": download_token, "download_url": f"/download/{download_token}"}
 
 
@@ -337,7 +430,7 @@ async def generate_download_link(
 async def get_me(vaicore_session: str = Cookie(None)):
     if not vaicore_session:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    clients = load_clients()
+    clients = await load_clients()
     entry = clients.get(vaicore_session)
     if not entry or not entry.get("active"):
         raise HTTPException(status_code=401, detail="Invalid session")
@@ -360,7 +453,7 @@ async def upload_file_via_token(
     category: str = Form("auto"),
 ):
     """Client-facing anonymous upload — authenticated via upload_token, not session cookie."""
-    clients = load_clients()
+    clients = await load_clients()
     matched_entry = None
     for token, entry in clients.items():
         if entry.get("upload_token") == upload_token and entry.get("active"):
@@ -484,7 +577,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
         log_entry["batch_id"] = batch_id
         log_entry["is_batch"] = True
 
-    await asyncio.to_thread(append_upload_log, log_entry)
+    await append_upload_log(log_entry)
 
     audio_types = [
         "audio/mpeg", "audio/wav", "audio/x-m4a", "audio/ogg", "audio/flac", "audio/mp4",
@@ -617,36 +710,7 @@ async def _run_upload_pipeline(background_tasks: BackgroundTasks, file: UploadFi
     return {"success": True, "file_name": safe_filename, "upload_id": blob_name, "batch_id": batch_id}
 
 
-async def update_log_status(client_code: str, filename: str, timestamp: str, status: str, **kwargs):
-    def _sync_update():
-        with _LOG_LOCK:
-            logs = _load_upload_log_no_lock()
-            updated = False
-            
-            # If timestamp is provided, look for exact match.
-            # If not, look for the latest entry matching client_code and filename.
-            target_logs = reversed(logs) if not timestamp else logs
-            
-            for log in target_logs:
-                if (
-                    log.get("client_code") == client_code
-                    and log.get("filename") == filename
-                    and (not timestamp or log.get("timestamp") == timestamp)
-                ):
-                    log["status"] = status
-                    for key, value in kwargs.items():
-                        log[key] = value
-                    updated = True
-                    break
-                    
-            if updated:
-                _save_upload_log_no_lock(logs)
-                print(f"Status updated to '{status}' for {filename}")
-
-    try:
-        await asyncio.to_thread(_sync_update)
-    except Exception as e:
-        print(f"ERROR: Failed to update log status: {str(e)}")
+# update_log_status is imported from upload_log_db module
 
 
 @app.get("/api/files/{client_code}")
@@ -660,10 +724,9 @@ async def get_files(
     status_map = {}
     logs = []
     try:
-        logs = await asyncio.to_thread(load_upload_log)
+        logs = await load_upload_log(client_code=client_code)
         for log in logs:
-            if log.get("client_code") == client_code:
-                status_map[log["filename"]] = log.get("status", "Received")
+            status_map[log["filename"]] = log.get("status", "Received")
     except Exception:
         pass
 
@@ -759,7 +822,7 @@ async def get_annotation_status(
 ):
     await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = get_project_id_for_file(client_code, filename)
+    project_id = await get_project_id_for_file(client_code, filename)
 
     status = await asyncio.to_thread(check_annotation_status, client_code, project_id, filename)
     return status
@@ -775,7 +838,7 @@ async def export_results(
 ):
     await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
 
-    project_id = get_project_id_for_file(client_code, filename)
+    project_id = await get_project_id_for_file(client_code, filename)
 
     try:
         result = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id, internal_export=internal)
@@ -830,7 +893,7 @@ async def package_delivery(
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for filename in filenames:
             try:
-                project_id = get_project_id_for_file(client_code, filename)
+                project_id = await get_project_id_for_file(client_code, filename)
                 # Export this file’s annotations from Label Studio
                 result = await asyncio.to_thread(
                     export_and_deliver, client_code, filename, project_id
@@ -870,15 +933,8 @@ async def package_delivery(
         await bc.upload_blob(zip_buffer.read(), overwrite=True)
 
     # Mark all packaged files as Delivered in the log
-    def _sync_mark_delivered():
-        with _LOG_LOCK:
-            logs = _load_upload_log_no_lock()
-            for log in logs:
-                if log.get("client_code") == client_code and log.get("filename") in exported_files:
-                    log["status"] = "Delivered"
-            _save_upload_log_no_lock(logs)
-
-    await asyncio.to_thread(_sync_mark_delivered)
+    for fname in exported_files:
+        await update_log_status(client_code, fname, None, "Delivered")
 
     return {
         "success": True,
@@ -899,7 +955,7 @@ async def export_results_force(
     """Force delivery despite duplicate collateral warnings (admin override)."""
     _check_admin(vaicore_admin)
 
-    project_id = get_project_id_for_file(client_code, filename)
+    project_id = await get_project_id_for_file(client_code, filename)
 
     try:
         result = await asyncio.to_thread(
@@ -1030,27 +1086,26 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
         except Exception as blob_err:
             print(f"Admin pipeline blob sync error: {blob_err}")
 
-        def _sync_merge_and_save(blobs):
-            with _LOG_LOCK:
-                logs = _load_upload_log_no_lock()
-                existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
-                
-                for client_code, original_name, timestamp in blobs:
-                    if (client_code, original_name) not in existing:
-                        existing.add((client_code, original_name))
-                        logs.append({
-                            "client_code": client_code,
-                            "filename": original_name,
-                            "timestamp": timestamp,
-                            "status": "In Review",
-                            "category": "auto"
-                        })
-                        
-                logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-                _save_upload_log_no_lock(logs)
-                return logs
-
-        logs = await asyncio.to_thread(_sync_merge_and_save, blobs_data)
+        logs = await load_upload_log()
+        existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
+        
+        for client_code, original_name, timestamp in blobs_data:
+            if (client_code, original_name) not in existing:
+                existing.add((client_code, original_name))
+                new_entry = {
+                    "client_code": client_code,
+                    "filename": original_name,
+                    "timestamp": timestamp,
+                    "status": "In Review",
+                    "category": "auto"
+                }
+                try:
+                    await append_upload_log(new_entry)
+                except Exception as append_err:
+                    print(f"Error auto-appending log: {append_err}")
+                    
+        logs = await load_upload_log()
+        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         
         pipeline = []
         for entry in logs[:200]:
@@ -1061,7 +1116,7 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
             completion = 0
             if status != "Delivered":
                 try:
-                    project_id = get_project_id_for_file(client_code, filename)
+                    project_id = await get_project_id_for_file(client_code, filename)
                     ls_status = await asyncio.to_thread(
                         check_annotation_status, client_code, project_id, filename
                     )
@@ -1100,19 +1155,10 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
     """Deletes an old or failed job from the upload log, tidying up the operations center."""
     _check_admin(vaicore_admin)
     try:
-        def _sync_delete_job():
-            with _LOG_LOCK:
-                logs = _load_upload_log_no_lock()
-                initial_len = len(logs)
-                logs = [log for log in logs if not (log.get("client_code") == client_code and log.get("filename") == filename)]
-                
-                if len(logs) < initial_len:
-                    _save_upload_log_no_lock(logs)
-                    return True
-                return False
-
-        success = await asyncio.to_thread(_sync_delete_job)
-        if success:
+        logs = await load_upload_log(client_code=client_code)
+        job_exists = any(log.get("filename") == filename for log in logs)
+        if job_exists:
+            await delete_log_entry(client_code, filename)
             return {"success": True, "message": "Job deleted successfully"}
         else:
             return {"success": False, "message": "Job not found"}
@@ -1128,7 +1174,7 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
 @app.get("/api/admin/clients")
 async def admin_list_clients(vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     return [
         {
             "token": token,
@@ -1151,7 +1197,7 @@ async def admin_add_client(
     vaicore_admin: str = Cookie(None),
 ):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     token = secrets.token_urlsafe(16)
     client_code = _next_client_code(clients)
     clients[token] = {
@@ -1163,7 +1209,7 @@ async def admin_add_client(
         "project_ids": {},
         "role_labels": [],
     }
-    save_clients(clients)
+    await save_clients(clients)
     return {
         "token": token,
         "client_code": client_code,
@@ -1186,7 +1232,7 @@ async def admin_update_client(
     vaicore_admin: str = Cookie(None),
 ):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
         
@@ -1213,45 +1259,45 @@ async def admin_update_client(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid role_labels JSON: {e}")
             
-    save_clients(clients)
+    await save_clients(clients)
     return {"success": True, "client": client}
 
 
 @app.patch("/api/admin/clients/{token}/toggle")
 async def admin_toggle_client(token: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
     clients[token]["active"] = not clients[token]["active"]
-    save_clients(clients)
+    await save_clients(clients)
     return {"active": clients[token]["active"]}
 
 
 @app.post("/api/admin/clients/{token}/rotate")
 async def admin_rotate_token(token: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
     new_token = secrets.token_urlsafe(16)
     clients[new_token] = clients.pop(token)
-    save_clients(clients)
+    await save_clients(clients)
     return {"token": new_token}
 
 
 @app.delete("/api/admin/clients/{token}")
 async def admin_delete_client(token: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
-    clients = load_clients()
+    clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
     del clients[token]
-    save_clients(clients)
+    await save_clients(clients)
     return {"success": True}
 
 
-def run_full_pipeline(
+async def run_full_pipeline(
     blob_filename: str,
     client_code: str,
     language: str,
@@ -1261,23 +1307,17 @@ def run_full_pipeline(
     try:
         print(f"Starting pipeline for {client_code}/{blob_filename}")
 
-        def sync_update(status, **kwargs):
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(update_log_status(client_code, original_filename, timestamp, status, **kwargs))
-            finally:
-                loop.close()
+        await update_log_status(client_code, original_filename, timestamp, "Transcribing")
 
-        sync_update("Transcribing")
-
-        result = process_audio(blob_filename, client_code, language)
+        result = await asyncio.to_thread(process_audio, blob_filename, client_code, language)
 
         if result['status'] == 'success':
             print(f"Audio processing complete: {result['segments']} segments")
-            sync_update("Reviewing", language=result.get('language'))
+            await update_log_status(client_code, original_filename, timestamp, "Reviewing", language=result.get('language'))
 
             try:
-                ls_result = push_to_labelstudio(
+                ls_result = await asyncio.to_thread(
+                    push_to_labelstudio,
                     result['processed_file'],
                     client_code,
                     original_filename,
@@ -1286,24 +1326,22 @@ def run_full_pipeline(
                 )
                 print(f"Label Studio push result: {ls_result}")
                 if ls_result.get('status') == 'success':
-                    sync_update("In Review")
+                    await update_log_status(client_code, original_filename, timestamp, "In Review")
                 else:
                     error_detail = ls_result.get('error', 'Unknown error')
                     print(f"Label Studio push failed: {error_detail}")
-                    sync_update("Failed (Label Studio)", labelstudio_error=error_detail)
+                    await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", labelstudio_error=error_detail)
             except Exception as e:
                 print(f"Error pushing to Labelbox: {str(e)}")
-                sync_update("Failed (Labelbox)", labelbox_error=str(e))
+                await update_log_status(client_code, original_filename, timestamp, "Failed (Labelbox)", labelbox_error=str(e))
         else:
             print(f"Audio processing failed: {result.get('error')}")
-            sync_update("Failed (Audio)")
+            await update_log_status(client_code, original_filename, timestamp, "Failed (Audio)")
 
     except Exception as e:
         print(f"Pipeline error: {str(e)}")
         try:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(update_log_status(client_code, original_filename, timestamp, "Error"))
-            loop.close()
+            await update_log_status(client_code, original_filename, timestamp, "Error")
         except Exception:
             pass
 
@@ -1313,7 +1351,7 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
     Intelligently resolves an image's project type (jewelry, housing, or business).
     Rules:
     1. Keyword-based matching on the filename.
-    2. Client-specific project_ids defaults from clients.json.
+    2. Client-specific project_ids defaults from clients database.
        If a client ONLY has one image project configured (e.g. they only have housing, or only have business),
        we automatically default to that category.
     3. OpenAI visual classification as the ultimate high-fidelity AI fallback.
@@ -1338,7 +1376,7 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
 
     # Rule 2: Client Default Mapping
     try:
-        clients = load_clients()
+        clients = await load_clients()
         for entry in clients.values():
                 if entry.get("client_code") == client_code:
                     project_ids = entry.get("project_ids", {})
@@ -2027,7 +2065,7 @@ async def run_zip_batch_pipeline(
                 }
 
                 # Read and write to logs safely
-                await asyncio.to_thread(append_upload_log, sub_log_entry)
+                await append_upload_log(sub_log_entry)
 
                 sub_filename_lower = sub_safe_filename.lower()
                 audio_extensions = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.mp4']
@@ -2091,7 +2129,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
         # 1. Fetch child items from logs
-        logs = await asyncio.to_thread(load_upload_log)
+        logs = await load_upload_log()
 
         batch_logs = [log for log in logs if log.get("batch_id") == batch_id and not log.get("is_batch")]
         parent_log = next((log for log in logs if log.get("batch_id") == batch_id and log.get("is_batch")), None)
@@ -2105,7 +2143,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
         exported_files = []
         for log in batch_logs:
             filename = log["filename"]
-            project_id = get_project_id_for_file(client_code, filename)
+            project_id = await get_project_id_for_file(client_code, filename)
             res = await asyncio.to_thread(export_and_deliver, client_code, filename, project_id)
             if res.get("status") == "success":
                 exported_files.append(res)
@@ -2143,15 +2181,10 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
             await b_client.upload_blob(zip_buffer.getvalue(), overwrite=True)
 
         # 5. Update logs to Delivered
-        def _sync_mark_batch_delivered():
-            with _LOG_LOCK:
-                logs = _load_upload_log_no_lock()
-                for log in logs:
-                    if log.get("batch_id") == batch_id:
-                        log["status"] = "Delivered"
-                _save_upload_log_no_lock(logs)
-
-        await asyncio.to_thread(_sync_mark_batch_delivered)
+        for log in batch_logs:
+            await update_log_status(client_code, log["filename"], None, "Delivered")
+        if parent_log:
+            await update_log_status(client_code, parent_log["filename"], None, "Delivered")
 
         # 6. Generate secure 72-hour SAS link
         exported_filename = batch_zip_name
@@ -2181,32 +2214,24 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
 async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
     _check_admin(vaicore_admin)
     try:
-        def _sync_delete_batch():
-            with _LOG_LOCK:
-                logs = _load_upload_log_no_lock()
-                
-                deleted_filenames = []
-                deleted_sub_blobs = []
-                client_code = None
-                
-                new_logs = []
-                for log in logs:
-                    if log.get("batch_id") == batch_id:
-                        deleted_filenames.append(log.get("filename"))
-                        client_code = log.get("client_code")
-                        if log.get("sub_blob_name"):
-                            deleted_sub_blobs.append(log.get("sub_blob_name"))
-                        if log.get("is_batch"):
-                            deleted_sub_blobs.append(f"{client_code}/{log.get('timestamp')}_{log.get('filename')}")
-                    else:
-                        new_logs.append(log)
-                        
-                if deleted_filenames:
-                    _save_upload_log_no_lock(new_logs)
-                    
-                return deleted_filenames, deleted_sub_blobs, client_code
+        logs = await load_upload_log()
+        
+        deleted_filenames = []
+        deleted_sub_blobs = []
+        client_code = None
+        
+        for log in logs:
+            if log.get("batch_id") == batch_id:
+                deleted_filenames.append(log.get("filename"))
+                client_code = log.get("client_code")
+                if log.get("sub_blob_name"):
+                    deleted_sub_blobs.append(log.get("sub_blob_name"))
+                if log.get("is_batch"):
+                    deleted_sub_blobs.append(f"{client_code}/{log.get('timestamp')}_{log.get('filename')}")
 
-        deleted_filenames, deleted_sub_blobs, client_code = await asyncio.to_thread(_sync_delete_batch)
+        if deleted_filenames:
+            for filename in deleted_filenames:
+                await delete_log_entry(client_code, filename)
         
         if not deleted_filenames:
             raise HTTPException(status_code=404, detail="Batch not found")
