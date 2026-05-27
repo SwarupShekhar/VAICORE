@@ -4,6 +4,9 @@ from datetime import datetime
 from sqlalchemy import select, update, delete
 from database import get_db_session
 from models import Client, UploadLog, JobStatus, JobCategory
+from logger import get_logger
+
+log = get_logger("vaidikai.upload_log_db")
 
 LEGACY_STATUS_MAP = {
     "Completed": "Delivered",

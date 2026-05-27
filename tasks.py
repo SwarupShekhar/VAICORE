@@ -1,8 +1,10 @@
 import asyncio
-import logging
 from celery import Task
 from celery_app import celery
 from upload_log_db import update_log_status
+from logger import get_logger
+
+log = get_logger("vaidikai.tasks")
 
 class PipelineTask(Task):
     def on_failure(self, exc, task_id, args, kwargs, einfo):
@@ -29,7 +31,7 @@ class PipelineTask(Task):
                     error=str(exc)
                 ))
             except Exception as e:
-                logging.error(f"Failed to set dead_letter status for {original_filename}: {e}")
+                log.error(f"Failed to set dead_letter status for {original_filename}: {e}")
 
 @celery.task(bind=True, base=PipelineTask, max_retries=3)
 def task_run_full_pipeline(self, *args, **kwargs):

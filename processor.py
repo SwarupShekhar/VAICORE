@@ -14,8 +14,11 @@ from azure.storage.blob import BlobServiceClient
 from openai import OpenAI
 from dotenv import load_dotenv
 import logging
+from logger import get_logger
 
 load_dotenv()
+
+log = get_logger("vaidikai.processor")
 
 # Silence Azure SDK HTTP request/response INFO logging — it floods docker logs
 # and buries real transcription/diarization output.
@@ -130,7 +133,7 @@ def identify_speaker_roles(segments: List[Dict], client_code: str) -> Dict[str, 
     customer_label = config.get('Customer', 'Customer')
 
     try:
-        print(f"Identifying speaker roles for {client_code} using AI context...")
+        log.info(f"Identifying speaker roles for {client_code} using AI context...")
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -146,10 +149,10 @@ def identify_speaker_roles(segments: List[Dict], client_code: str) -> Dict[str, 
             response_format={"type": "json_object"}
         )
         mapping = json.loads(response.choices[0].message.content)
-        print(f"AI Role Mapping: {mapping}")
+        log.info(f"AI Role Mapping: {mapping}")
         return mapping
     except Exception as e:
-        print(f"Role identification failed: {e}")
+        log.error(f"Role identification failed: {e}")
         return {sid: sid for sid in speaker_ids}
 
 def get_call_intelligence(transcript: str) -> Dict[str, Any]:
@@ -158,7 +161,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
     Detects friction, latency, disputes, and self-service failures.
     """
     try:
-        print("Running AI Intelligence Analysis on transcript...")
+        log.info("Running AI Intelligence Analysis on transcript...")
         response = client.chat.completions.create(
             model="gpt-4o",
             timeout=5.0,
@@ -185,7 +188,7 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
         intelligence = json.loads(response.choices[0].message.content)
         return intelligence
     except Exception as e:
-        print(f"AI Intelligence Analysis failed: {e}")
+        log.error(f"AI Intelligence Analysis failed: {e}")
         return {
             "onboarding_friction": [], "operational_pain": [], "financial_disputes": [], 
             "service_leakage": [], "mood": "Neutral", "churn_risk": "Low Risk", "summary": ""
@@ -225,12 +228,12 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
     # wrong-language detection is a primary cause of heavy content loss.
     if language:
         _kw["language"] = language
-        print(f"Mixed transcription: language pinned to '{language}'")
+        log.info(f"Mixed transcription: language pinned to '{language}'")
     with open(local_audio_path, "rb") as f:
         r = groq_client.audio.transcriptions.create(file=f, **_kw)
     detected_language = getattr(r, 'language', None) or (language or 'auto')
     raw = getattr(r, 'segments', []) or []
-    print(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
+    log.info(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
 
     # 2. Split channels (energy measurement only — never transcribed).
     ch_dir = Path(base_temp_dir) / "ch"
@@ -309,7 +312,7 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                 continue
         temp_segments.append(dict(s))
 
-    print(f"Channel-energy diarization: {len(merged)} segs -> {len(temp_segments)} bubbles.")
+    log.info(f"Channel-energy diarization: {len(merged)} segs -> {len(temp_segments)} bubbles.")
     return temp_segments, detected_language
 
 
@@ -320,7 +323,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
     with _PROCESSING_LOCK:
         try:
             gc.collect()
-            print(f"Starting cloud-based processing for {client_code}/{blob_filename}")
+            log.info(f"Starting cloud-based processing for {client_code}/{blob_filename}")
             
             connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
             base_temp_dir = Path(f"/tmp/vaidikai/{client_code}")
@@ -350,12 +353,12 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         found_container = container_name
                         break
                 except Exception as ce:
-                    print(f"Warning: Could not search container {container_name}: {ce}")
+                    log.warning(f"Warning: Could not search container {container_name}: {ce}")
             
             if not full_blob_path:
                 raise ValueError(f"No matching blob found for {blob_filename} in {client_code}/ (Searched {containers})")
             
-            print(f"Matched blob: {full_blob_path} in container: {found_container}")
+            log.info(f"Matched blob: {full_blob_path} in container: {found_container}")
             
             pure_filename = full_blob_path.split("/")[-1]
             local_audio_path = base_temp_dir / pure_filename
@@ -378,8 +381,8 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                 ], check=True, capture_output=True, text=True)
                 stereo = int((_pc.stdout.strip() or '1')) >= 2
             except Exception as _pe:
-                print(f"Channel probe failed: {_pe}; assuming mono.")
-            print(f"Audio channels: {'STEREO (channel=speaker)' if stereo else 'MONO (needs diarization)'}")
+                log.error(f"Channel probe failed: {_pe}; assuming mono.")
+            log.info(f"Audio channels: {'STEREO (channel=speaker)' if stereo else 'MONO (needs diarization)'}")
 
             # STEP 1.5: Accurate Diarization with pyannote.audio (MONO only)
             use_pyannote = False
@@ -387,7 +390,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
             hf_token = (os.getenv("HF_TOKEN") or os.getenv("HF_Read_token", "")).strip('"').strip("'")
 
             if hf_token and not stereo:
-                print("Starting Pyannote Diarization...")
+                log.info("Starting Pyannote Diarization...")
                 try:
                     # Pre-validate token access to gated model before loading heavy pipeline
                     import requests as _hf_req
@@ -406,7 +409,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         )
                     if _r.status_code not in (200, 302):
                         raise PermissionError(f"Unexpected HF response {_r.status_code} for {_PYANNOTE_MODEL}")
-                    print(f"HF token validated. Access to {_PYANNOTE_MODEL} confirmed.")
+                    log.info(f"HF token validated. Access to {_PYANNOTE_MODEL} confirmed.")
 
                     from pyannote.audio import Pipeline
                     pipeline = Pipeline.from_pretrained(
@@ -416,13 +419,13 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     import torch
                     if torch.cuda.is_available():
                         pipeline.to(torch.device("cuda"))
-                        print("Using CUDA for Pyannote")
+                        log.info("Using CUDA for Pyannote")
                     else:
                         pipeline.to(torch.device("cpu"))
                     import subprocess
                     temp_wav_path = str(local_audio_path) + ".16k.wav"
                     try:
-                        print("Converting audio to 16kHz mono PCM WAV for Pyannote...")
+                        log.info("Converting audio to 16kHz mono PCM WAV for Pyannote...")
                         subprocess.run([
                             'ffmpeg', '-y', '-i', str(local_audio_path),
                             '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
@@ -436,7 +439,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         # tensor pyannote uses the actual decoded sample count.
                         import torchaudio
                         waveform, sr = torchaudio.load(temp_wav_path)
-                        print(f"Running Pyannote on waveform ({waveform.shape[1]} samples @ {sr}Hz)...")
+                        log.info(f"Running Pyannote on waveform ({waveform.shape[1]} samples @ {sr}Hz)...")
                         diarization = pipeline({"waveform": waveform, "sample_rate": sr})
                     finally:
                         if os.path.exists(temp_wav_path):
@@ -448,18 +451,18 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                             "end": turn.end,
                             "speaker": speaker
                         })
-                    print(f"Diarization complete. Found {len(speaker_segments)} turns.")
+                    log.info(f"Diarization complete. Found {len(speaker_segments)} turns.")
                     use_pyannote = True
                 except Exception as e:
-                    print(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
+                    log.error(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
             elif stereo:
-                print("Stereo audio: channel-based speaker separation (pyannote skipped).")
+                log.info("Stereo audio: channel-based speaker separation (pyannote skipped).")
             else:
-                print("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
+                log.info("HF_TOKEN not found. Skipping Pyannote Diarization. Falling back to gap-based.")
             
             # STEP 2: Transcribe with Local Whisper Large-v3 for maximum accuracy
             try:
-                print("Using Groq API for lightning-fast Whisper Large-v3...")
+                log.info("Using Groq API for lightning-fast Whisper Large-v3...")
                 from openai import OpenAI
                 groq_api_key = os.getenv("GROQ_API_KEY")
                 if not groq_api_key:
@@ -479,7 +482,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     if not temp_segments:
                         raise Exception("Dual-channel transcription produced no segments")
                 else:
-                    print("Starting transcription with Groq (Whisper Large-v3)...")
+                    log.info("Starting transcription with Groq (Whisper Large-v3)...")
                     _mkw = dict(
                         model="whisper-large-v3",
                         response_format="verbose_json",
@@ -489,12 +492,12 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     )
                     if language:
                         _mkw["language"] = language
-                        print(f"Mono transcription: language pinned to '{language}'")
+                        log.info(f"Mono transcription: language pinned to '{language}'")
                     with open(local_audio_path, "rb") as f:
                         response = groq_client.audio.transcriptions.create(file=f, **_mkw)
 
                     detected_language = getattr(response, 'language', None) or (language or 'auto')
-                    print(f"Transcription complete. Detected language: {detected_language}")
+                    log.info(f"Transcription complete. Detected language: {detected_language}")
 
                     # Single-call segment-level output. Whisper segments cover
                     # the full audio contiguously; absolute timestamps line up
@@ -516,7 +519,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     if not norm_segments and response_text.strip():
                         norm_segments = [{"text": response_text.strip(), "start": 0, "end": 0, "avg_logprob": 0.0}]
 
-                    print(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
+                    log.info(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
 
                     temp_segments = []
                     current_speaker = "Speaker A"
@@ -563,7 +566,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         last_end_time = end
 
             except Exception as e:
-                print(f"Local Whisper failed: {e}. Falling back to OpenAI whisper-1 API...")
+                log.error(f"Local Whisper failed: {e}. Falling back to OpenAI whisper-1 API...")
                 temp_segments = []
                 max_retries = 3
                 response = None
@@ -582,7 +585,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                             response = client.audio.transcriptions.create(**_wkwargs)
                         break
                     except Exception as api_e:
-                        print(f"API fallback attempt {attempt+1} failed: {api_e}")
+                        log.error(f"API fallback attempt {attempt+1} failed: {api_e}")
                         if attempt < max_retries - 1:
                             time.sleep(3 * (attempt + 1))
                         else:
@@ -700,5 +703,5 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
 
         except Exception as e:
             error_msg = f"Error in processor: {str(e)}"
-            print(error_msg)
+            log.error(error_msg)
             return {"status": "error", "error": error_msg}

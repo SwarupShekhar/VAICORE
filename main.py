@@ -1,3 +1,5 @@
+from logger import get_logger
+log = get_logger("vaidikai.main")
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Cookie, Request
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -512,8 +514,8 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
     ]
 
     safe_filename = os.path.basename(file.filename)
-    print(f"DEBUG: File content_type: {file.content_type}")
-    print(f"DEBUG: File filename (sanitized): {safe_filename}")
+    log.debug(f"DEBUG: File content_type: {file.content_type}")
+    log.debug(f"DEBUG: File filename (sanitized): {safe_filename}")
 
     audio_extensions = ['.wav', '.mp3', '.m4a', '.ogg', '.flac', '.mp4']
     zip_extensions = ['.zip']
@@ -526,10 +528,10 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
             content={"success": False, "message": f"File type not allowed: {file.content_type}"},
         )
 
-    print(f"DEBUG: Reading file content...")
+    log.debug(f"DEBUG: Reading file content...")
     content = await file.read()
     file_size = len(content)
-    print(f"DEBUG: File size: {file_size} bytes")
+    log.debug(f"DEBUG: File size: {file_size} bytes")
 
     if file_size > 500 * 1024 * 1024:
         return JSONResponse(
@@ -540,7 +542,7 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            print(f"DEBUG: Connecting to Azure (Attempt {attempt + 1})...")
+            log.debug(f"DEBUG: Connecting to Azure (Attempt {attempt + 1})...")
             async with BlobServiceClient.from_connection_string(
                 AZURE_STORAGE_CONNECTION_STRING,
                 connection_timeout=600,
@@ -551,17 +553,17 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
                 blob_client = blob_service_client.get_blob_client(
                     container="client-intake", blob=blob_name
                 )
-                print(f"DEBUG: Uploading to Azure blob: {blob_name}...")
+                log.debug(f"DEBUG: Uploading to Azure blob: {blob_name}...")
                 # Removed max_concurrency to avoid broken pipe issues on fragile connections
                 await blob_client.upload_blob(content, overwrite=True)
-                print(f"DEBUG: Azure upload complete.")
+                log.debug(f"DEBUG: Azure upload complete.")
                 break
         except Exception as e:
             if attempt < max_retries - 1:
-                print(f"WARNING: Azure upload attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                log.warning(f"WARNING: Azure upload attempt {attempt + 1} failed: {str(e)}. Retrying...")
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
             else:
-                print(f"ERROR: Azure upload failed after {max_retries} attempts: {str(e)}")
+                log.error(f"ERROR: Azure upload failed after {max_retries} attempts: {str(e)}")
                 return JSONResponse(
                     status_code=500,
                     content={"success": False, "message": f"Azure upload failed: {str(e)}"},
@@ -862,7 +864,7 @@ async def export_results(
             return {"success": False, "message": result.get("error", "Export failed")}
 
     except Exception as e:
-        print(f"ERROR in export API: {str(e)}")
+        log.info(f"ERROR in export API: {str(e)}")
         return {"success": False, "message": str(e)}
 
 
@@ -965,7 +967,7 @@ async def export_results_force(
             return {"success": False, "message": result.get("error", "Export failed")}
 
     except Exception as e:
-        print(f"ERROR in force export API: {str(e)}")
+        log.info(f"ERROR in force export API: {str(e)}")
         return {"success": False, "message": str(e)}
 
 
@@ -1079,7 +1081,7 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
                         timestamp = f"{sub_parts[0]}_{sub_parts[1]}" if len(sub_parts) >= 3 else "20260501_120000"
                         blobs_data.append((client_code, original_name, timestamp))
         except Exception as blob_err:
-            print(f"Admin pipeline blob sync error: {blob_err}")
+            log.info(f"Admin pipeline blob sync error: {blob_err}")
 
         logs = await load_upload_log()
         existing = {(entry.get("client_code"), entry.get("filename")) for entry in logs if entry.get("client_code") and entry.get("filename")}
@@ -1097,7 +1099,7 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
                 try:
                     await append_upload_log(new_entry)
                 except Exception as append_err:
-                    print(f"Error auto-appending log: {append_err}")
+                    log.info(f"Error auto-appending log: {append_err}")
                     
         logs = await load_upload_log()
         logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
@@ -1141,7 +1143,7 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
             
         return pipeline
     except Exception as e:
-        print(f"Admin pipeline error: {e}")
+        log.info(f"Admin pipeline error: {e}")
         return []
 
 
@@ -1159,7 +1161,7 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
             return {"success": False, "message": "Job not found"}
             
     except Exception as e:
-        print(f"Admin delete error: {e}")
+        log.info(f"Admin delete error: {e}")
         return {"success": False, "message": str(e)}
 
 # Removed duplicate admin_delete_batch route (the more complete one is defined later in the file)
@@ -1300,14 +1302,14 @@ async def run_full_pipeline(
     timestamp: str,
 ):
     try:
-        print(f"Starting pipeline for {client_code}/{blob_filename}")
+        log.info(f"Starting pipeline for {client_code}/{blob_filename}")
 
         await update_log_status(client_code, original_filename, timestamp, "Transcribing")
 
         result = await asyncio.to_thread(process_audio, blob_filename, client_code, language)
 
         if result['status'] == 'success':
-            print(f"Audio processing complete: {result['segments']} segments")
+            log.info(f"Audio processing complete: {result['segments']} segments")
             await update_log_status(client_code, original_filename, timestamp, "Reviewing", language=result.get('language'))
 
             try:
@@ -1319,22 +1321,22 @@ async def run_full_pipeline(
                     processed_blob=result.get('processed_blob'),
                     language=result.get('language'),
                 )
-                print(f"Label Studio push result: {ls_result}")
+                log.info(f"Label Studio push result: {ls_result}")
                 if ls_result.get('status') == 'success':
                     await update_log_status(client_code, original_filename, timestamp, "In Review")
                 else:
                     error_detail = ls_result.get('error', 'Unknown error')
-                    print(f"Label Studio push failed: {error_detail}")
+                    log.info(f"Label Studio push failed: {error_detail}")
                     await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", labelstudio_error=error_detail)
             except Exception as e:
-                print(f"Error pushing to Labelbox: {str(e)}")
+                log.info(f"Error pushing to Labelbox: {str(e)}")
                 await update_log_status(client_code, original_filename, timestamp, "Failed (Labelbox)", labelbox_error=str(e))
         else:
-            print(f"Audio processing failed: {result.get('error')}")
+            log.info(f"Audio processing failed: {result.get('error')}")
             await update_log_status(client_code, original_filename, timestamp, "Failed (Audio)")
 
     except Exception as e:
-        print(f"Pipeline error: {str(e)}")
+        log.info(f"Pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error")
         except Exception:
@@ -1360,13 +1362,13 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
     is_jewelry = any(k in filename_lower for k in ["jewelry", "jewel", "necklace", "ring", "bangle", "gold", "silver", "platinum", "earring", "bracelet", "gem"])
     
     if is_housing:
-        print(f"Keyword-detected category 'housing' for filename: {original_filename}")
+        log.info(f"Keyword-detected category 'housing' for filename: {original_filename}")
         return "housing"
     elif is_business:
-        print(f"Keyword-detected category 'business' for filename: {original_filename}")
+        log.info(f"Keyword-detected category 'business' for filename: {original_filename}")
         return "business"
     elif is_jewelry:
-        print(f"Keyword-detected category 'jewelry' for filename: {original_filename}")
+        log.info(f"Keyword-detected category 'jewelry' for filename: {original_filename}")
         return "jewelry"
 
     # Rule 2: Client Default Mapping
@@ -1383,10 +1385,10 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
                     # If they only have ONE image project mapped, default to it
                     image_projects = [k for k in ["jewelry", "housing", "business"] if k in project_ids]
                     if len(image_projects) == 1:
-                        print(f"Client {client_code} only has {image_projects[0]} project mapped. Defaulting to {image_projects[0]}.")
+                        log.info(f"Client {client_code} only has {image_projects[0]} project mapped. Defaulting to {image_projects[0]}.")
                         return image_projects[0]
     except Exception as e:
-        print(f"Error checking client-level default projects: {e}")
+        log.info(f"Error checking client-level default projects: {e}")
 
     # Rule 3: OpenAI Visual Classification Fallback (High-fidelity)
     openai_key = os.getenv("OPENAI_API_KEY")
@@ -1423,20 +1425,20 @@ async def resolve_image_category(client_code: str, original_filename: str) -> st
                 "max_tokens": 10,
                 "temperature": 0.0
             }
-            print(f"Calling OpenAI Vision model to visually classify: {original_filename}...")
+            log.info(f"Calling OpenAI Vision model to visually classify: {original_filename}...")
             r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload, timeout=12)
             r.raise_for_status()
             res_val = r.json()["choices"][0]["message"]["content"].strip().lower()
             # Clean response text in case it returned punctuation or markdown
             for cat in ["jewelry", "housing", "business"]:
                 if cat in res_val:
-                    print(f"OpenAI visual classification successful: '{cat}'")
+                    log.info(f"OpenAI visual classification successful: '{cat}'")
                     return cat
         except Exception as vision_err:
-            print(f"OpenAI vision classification failed: {vision_err}")
+            log.info(f"OpenAI vision classification failed: {vision_err}")
 
     # Rule 4: Global Default Fallback
-    print(f"Unresolved image category for {original_filename}, falling back to global default: jewelry")
+    log.info(f"Unresolved image category for {original_filename}, falling back to global default: jewelry")
     return "jewelry"
 
 
@@ -1458,7 +1460,7 @@ def _fetch_image_numpy(url: str):
         img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         return img
     except Exception as e:
-        print(f"[PreAnnotation] Image fetch failed: {e}")
+        log.info(f"[PreAnnotation] Image fetch failed: {e}")
         return None
 
 
@@ -1492,7 +1494,7 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
 
             contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
-                print("[GrabCut] No contours found, returning empty.")
+                log.info("[GrabCut] No contours found, returning empty.")
                 return []
 
             largest = max(contours, key=cv2.contourArea)
@@ -1502,7 +1504,7 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
                 return []
 
             points = [[round(float(p[0][0]) / w * 100, 2), round(float(p[0][1]) / h * 100, 2)] for p in approx]
-            print(f"[GrabCut] Main Structure: {len(points)}-point polygon")
+            log.info(f"[GrabCut] Main Structure: {len(points)}-point polygon")
             return [{"class": "Main Structure", "points": points}]
 
         else:
@@ -1528,11 +1530,11 @@ def _opencv_preannotations(image_np, project_type: str) -> list:
                     continue
                 points = [[round(float(pt[0][0]) / w * 100, 2), round(float(pt[0][1]) / h * 100, 2)] for pt in approx]
                 predictions.append({"class": "business_signage", "points": points})
-            print(f"[OpenCV] {len(predictions)} business contour regions")
+            log.info(f"[OpenCV] {len(predictions)} business contour regions")
             return predictions
 
     except Exception as e:
-        print(f"[OpenCV] Pre-annotation failed (non-blocking): {e}")
+        log.info(f"[OpenCV] Pre-annotation failed (non-blocking): {e}")
         return []
 
 
@@ -1547,11 +1549,11 @@ async def _sam_preannotations(image_url: str, project_type: str,
         async with httpx.AsyncClient(timeout=5.0) as hc:
             health = await hc.get(f"{sam_url}/health")
             if health.status_code != 200:
-                print(f"[SAM] Backend unhealthy ({health.status_code}), skipping.")
+                log.info(f"[SAM] Backend unhealthy ({health.status_code}), skipping.")
                 return []
 
         if project_type == "housing":
-            print("[Vision Engine] Running zero-shot vision guidance (Florence-2 / Grounding DINO) for House Image Annotation...")
+            log.info("[Vision Engine] Running zero-shot vision guidance (Florence-2 / Grounding DINO) for House Image Annotation...")
             context_results = [
                 # 1. Positive facade targets
                 {
@@ -1640,10 +1642,10 @@ async def _sam_preannotations(image_url: str, project_type: str,
                         "points": region["value"]["points"],
                     })
 
-        print(f"[SAM] {len(predictions)} polygon regions for {project_type}")
+        log.info(f"[SAM] {len(predictions)} polygon regions for {project_type}")
         return predictions
     except Exception as e:
-        print(f"[SAM] Pre-annotation failed (non-blocking): {e}")
+        log.info(f"[SAM] Pre-annotation failed (non-blocking): {e}")
         return []
 
 
@@ -1654,15 +1656,15 @@ async def _get_image_preannotations(image_url: str, project_type: str) -> list:
             predictions = await _sam_preannotations(image_url, project_type)
             if predictions:
                 return predictions
-            print(f"[PreAnnotation] SAM empty for {project_type}, falling back to OpenCV.")
+            log.info(f"[PreAnnotation] SAM empty for {project_type}, falling back to OpenCV.")
         else:
-            print("[Housing] Utilizing orientation-invariant 4-point centered bounding box framing.")
+            log.info("[Housing] Utilizing orientation-invariant 4-point centered bounding box framing.")
 
         image_np = await asyncio.to_thread(_fetch_image_numpy, image_url)
         if image_np is not None:
             return await asyncio.to_thread(_opencv_preannotations, image_np, project_type)
     except Exception as e:
-        print(f"[PreAnnotation] All methods failed (non-blocking): {e}")
+        log.info(f"[PreAnnotation] All methods failed (non-blocking): {e}")
     return []
 
 
@@ -1694,7 +1696,7 @@ async def run_jewelry_pipeline(
             else:
                 project_name = "Jewelry"
 
-        print(f"Starting image pipeline ({project_name}) for {client_code}/{original_filename}")
+        log.info(f"Starting image pipeline ({project_name}) for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Processing Image")
 
         # 1. Get secure SAS URL for RunPod / Label Studio
@@ -1702,18 +1704,18 @@ async def run_jewelry_pipeline(
         
         # Redact the security signature token when printing to container logs
         clean_log_url = image_url.split("?")[0]
-        print(f"Generated secure image url: {clean_log_url}")
+        log.info(f"Generated secure image url: {clean_log_url}")
 
         predictions = []
         if project_type == "jewelry":
             # 2a. RunPod inference for polygon pre-annotations
-            print("Triggering RunPod jewelry classification model...")
+            log.info("Triggering RunPod jewelry classification model...")
             inference_result = await asyncio.to_thread(run_runpod_inference, image_url, task_type="jewelry")
             if inference_result.get("status") == "success":
                 predictions = inference_result.get("predictions", [])
-                print(f"Jewelry inference complete: detected {len(predictions)} items.")
+                log.info(f"Jewelry inference complete: detected {len(predictions)} items.")
             else:
-                print(f"WARNING: RunPod inference failed: {inference_result.get('message')}. Proceeding with empty predictions.")
+                log.warning(f"WARNING: RunPod inference failed: {inference_result.get('message')}. Proceeding with empty predictions.")
 
             # 2b. Collateral duplicate detection (non-blocking — never stalls pipeline)
             if predictions:
@@ -1739,20 +1741,20 @@ async def run_jewelry_pipeline(
                                 top = matches[0]
                                 warn = (f"Matches {top['matched_item']['image_file']} "
                                         f"({top['similarity']:.0%} similar)")
-                                print(f"[Collateral] DUPLICATE DETECTED: {original_filename} — {warn}")
+                                log.info(f"[Collateral] DUPLICATE DETECTED: {original_filename} — {warn}")
                                 await update_log_status(
                                     client_code, original_filename, timestamp,
                                     "Duplicate Detected", error=warn,
                                 )
                             else:
-                                print(f"[Collateral] No duplicates found for {original_filename}.")
+                                log.info(f"[Collateral] No duplicates found for {original_filename}.")
                 except Exception as cd_err:
-                    print(f"[Collateral] Detection skipped (non-blocking): {cd_err}")
+                    log.info(f"[Collateral] Detection skipped (non-blocking): {cd_err}")
         else:
             # 2c. House / Business: SAM → OpenCV fallback pre-annotations
-            print(f"Generating pre-annotations for {project_type} via SAM → OpenCV fallback...")
+            log.info(f"Generating pre-annotations for {project_type} via SAM → OpenCV fallback...")
             predictions = await _get_image_preannotations(image_url, project_type)
-            print(f"Pre-annotation complete: {len(predictions)} regions for {project_type}.")
+            log.info(f"Pre-annotation complete: {len(predictions)} regions for {project_type}.")
 
         await update_log_status(client_code, original_filename, timestamp, "Reviewing")
 
@@ -1783,7 +1785,7 @@ async def run_jewelry_pipeline(
             )
 
     except Exception as e:
-        print(f"Image pipeline error: {str(e)}")
+        log.info(f"Image pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
         except Exception:
@@ -1797,14 +1799,14 @@ async def run_form_pipeline(
     timestamp: str,
 ):
     try:
-        print(f"Starting highly secure form OCR pipeline for {client_code}/{original_filename}")
+        log.info(f"Starting highly secure form OCR pipeline for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Parsing Form")
 
         # 1. Get secure SAS URL for local OCR scanner
         doc_url = generate_sas_url(original_filename, client_code)
         
         clean_log_url = doc_url.split("?")[0]
-        print(f"Generated secure document url: {clean_log_url}")
+        log.info(f"Generated secure document url: {clean_log_url}")
 
         raw_text = ""
         # 2. Extract raw OCR from RunPod
@@ -1812,12 +1814,12 @@ async def run_form_pipeline(
             inference_result = await asyncio.to_thread(run_runpod_inference, doc_url, task_type="form")
             if inference_result.get("status") == "success":
                 raw_text = inference_result.get("raw_ocr_text", "")
-                print("RunPod OCR completed successfully.")
+                log.info("RunPod OCR completed successfully.")
             else:
-                print(f"WARNING: RunPod OCR returned non-success status. Message: {inference_result.get('message')}")
+                log.warning(f"WARNING: RunPod OCR returned non-success status. Message: {inference_result.get('message')}")
                 raise Exception("Non-success RunPod response")
         except Exception as e:
-            print(f"WARNING: RunPod Form OCR failed ({str(e)}). Routing to local OCR Fallback Sandbox...")
+            log.warning(f"WARNING: RunPod Form OCR failed ({str(e)}). Routing to local OCR Fallback Sandbox...")
             # Route to our robust local OCR fallbacks (EasyOCR or Sandbox Simulation)
             raw_text = await asyncio.to_thread(local_ocr_scan, doc_url)
         
@@ -1834,7 +1836,7 @@ async def run_form_pipeline(
             await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
 
     except Exception as e:
-        print(f"Form pipeline error: {str(e)}")
+        log.info(f"Form pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
         except Exception:
@@ -1848,7 +1850,7 @@ async def run_clickstream_pipeline(
     timestamp: str,
 ):
     try:
-        print(f"Starting clickstream sequence pipeline for {client_code}/{original_filename}")
+        log.info(f"Starting clickstream sequence pipeline for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Parsing Logs")
         
         # 1. Fetch raw log bytes from Azure Blob Intake container
@@ -1863,9 +1865,9 @@ async def run_clickstream_pipeline(
                 if await blob_client.exists():
                     blob_data = await blob_client.download_blob()
                     raw_content = await blob_data.readall()
-                    print(f"Successfully downloaded raw clickstream content: {len(raw_content)} bytes")
+                    log.info(f"Successfully downloaded raw clickstream content: {len(raw_content)} bytes")
         except Exception as e:
-            print(f"WARNING: Failed to fetch raw clickstream blob from Azure ({str(e)}). Proceeding with simulation fallback...")
+            log.warning(f"WARNING: Failed to fetch raw clickstream blob from Azure ({str(e)}). Proceeding with simulation fallback...")
 
         # 2. Parse clickstream timeline events dynamically using our analysis engine
         clickstream_data = await asyncio.to_thread(parse_clickstream_logs, raw_content, original_filename)
@@ -1880,7 +1882,7 @@ async def run_clickstream_pipeline(
             await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
 
     except Exception as e:
-        print(f"Clickstream pipeline error: {str(e)}")
+        log.info(f"Clickstream pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
         except Exception:
@@ -1894,7 +1896,7 @@ async def run_transcript_pipeline(
     timestamp: str,
 ):
     try:
-        print(f"Starting text transcript pipeline for {client_code}/{original_filename}")
+        log.info(f"Starting text transcript pipeline for {client_code}/{original_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Parsing Logs")
         
         # 1. Fetch raw content from Azure blob
@@ -1910,9 +1912,9 @@ async def run_transcript_pipeline(
                 if await blob_client.exists():
                     blob_data = await blob_client.download_blob()
                     raw_content = await blob_data.readall()
-                    print(f"Successfully downloaded raw transcript content: {len(raw_content)} bytes")
+                    log.info(f"Successfully downloaded raw transcript content: {len(raw_content)} bytes")
         except Exception as e:
-            print(f"WARNING: Failed to fetch raw transcript blob from Azure ({str(e)}). Proceeding with default template...")
+            log.warning(f"WARNING: Failed to fetch raw transcript blob from Azure ({str(e)}). Proceeding with default template...")
 
         # 2. Parse text transcript dynamically
         from transcript_parser import parse_transcript_content
@@ -1928,7 +1930,7 @@ async def run_transcript_pipeline(
             await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", error=ls_result.get("error"))
 
     except Exception as e:
-        print(f"Transcript pipeline error: {str(e)}")
+        log.info(f"Transcript pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e))
         except Exception:
@@ -1969,15 +1971,15 @@ async def _run_webhook_export(client_code: str, original_filename: str, project_
                 else:
                     status = "Review Finished"
         except Exception as e:
-            print(f"Progress check failed, defaulting to 'Review Finished': {e}")
+            log.info(f"Progress check failed, defaulting to 'Review Finished': {e}")
 
         # 2. Update the upload log
         try:
             await update_log_status(client_code, original_filename, None, status)
         except Exception as e:
-            print(f"Log update failed in webhook: {e}")
+            log.info(f"Log update failed in webhook: {e}")
     except Exception as e:
-        print(f"Webhook pipeline failed: {e}")
+        log.info(f"Webhook pipeline failed: {e}")
 
 
 async def run_zip_batch_pipeline(
@@ -1989,7 +1991,7 @@ async def run_zip_batch_pipeline(
     category: str = "auto",
 ):
     try:
-        print(f"Starting ZIP batch pipeline for {client_code}/{original_filename} (Batch ID: {batch_id})")
+        log.info(f"Starting ZIP batch pipeline for {client_code}/{original_filename} (Batch ID: {batch_id})")
         # 1. Download the ZIP file from Azure client-intake container
         async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
             blob_client = blob_service_client.get_blob_client(container="client-intake", blob=blob_filename)
@@ -2017,7 +2019,7 @@ async def run_zip_batch_pipeline(
                 relative_path = full_path.relative_to(temp_dir)
                 extracted_files.append((full_path, relative_path.as_posix()))
 
-        print(f"ZIP batch extracted {len(extracted_files)} valid files.")
+        log.info(f"ZIP batch extracted {len(extracted_files)} valid files.")
 
         if not extracted_files:
             await update_log_status(client_code, original_filename, timestamp, "Failed (Empty ZIP)", batch_id=batch_id)
@@ -2106,13 +2108,13 @@ async def run_zip_batch_pipeline(
                         force_project_type=category,
                     )
                 else:
-                    print(f"Unknown extension for {sub_safe_filename}, uploaded without processing.")
+                    log.info(f"Unknown extension for {sub_safe_filename}, uploaded without processing.")
 
         shutil.rmtree(temp_dir, ignore_errors=True)
         await update_log_status(client_code, original_filename, timestamp, "In Review", batch_id=batch_id)
 
     except Exception as e:
-        print(f"ZIP Batch pipeline error: {str(e)}")
+        log.info(f"ZIP Batch pipeline error: {str(e)}")
         try:
             await update_log_status(client_code, original_filename, timestamp, "Error", error=str(e), batch_id=batch_id)
         except Exception:
@@ -2164,7 +2166,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
                             file_content = await blob_data.readall()
                             z.writestr(filename_in_container, file_content)
                     except Exception as ex:
-                        print(f"Failed to include {blob_name} in batch zip: {ex}")
+                        log.info(f"Failed to include {blob_name} in batch zip: {ex}")
 
         # 4. Upload ZIP delivery back to Azure
         batch_zip_name = f"{batch_id}_delivered.zip"
@@ -2201,7 +2203,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
             "expires_in": "72 hours"
         }
     except Exception as e:
-        print(f"Error packaging batch delivery {batch_id}: {str(e)}")
+        log.info(f"Error packaging batch delivery {batch_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2241,15 +2243,15 @@ async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
                     b_client = container_intake.get_blob_client(blob_name)
                     if await b_client.exists():
                         await b_client.delete_blob()
-                        print(f"Deleted intake blob: {blob_name}")
+                        log.info(f"Deleted intake blob: {blob_name}")
                 except Exception as ex:
-                    print(f"Failed to delete intake blob {blob_name}: {ex}")
+                    log.info(f"Failed to delete intake blob {blob_name}: {ex}")
 
             if client_code:
                 async for blob in container_intake.list_blobs(name_starts_with=f"{client_code}/batches/{batch_id}/"):
                     try:
                         await container_intake.delete_blob(blob.name)
-                        print(f"Deleted remaining intake blob: {blob.name}")
+                        log.info(f"Deleted remaining intake blob: {blob.name}")
                     except Exception:
                         pass
                 
@@ -2257,7 +2259,7 @@ async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
                     if batch_id in blob.name:
                         try:
                             await container_processing.delete_blob(blob.name)
-                            print(f"Deleted processing blob: {blob.name}")
+                            log.info(f"Deleted processing blob: {blob.name}")
                         except Exception:
                             pass
 
@@ -2265,13 +2267,13 @@ async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
                     if batch_id in blob.name:
                         try:
                             await container_delivery.delete_blob(blob.name)
-                            print(f"Deleted delivery blob: {blob.name}")
+                            log.info(f"Deleted delivery blob: {blob.name}")
                         except Exception:
                             pass
 
         return {"success": True, "message": f"Successfully deleted batch {batch_id} and all nested resources."}
     except Exception as e:
-        print(f"Error deleting batch {batch_id}: {str(e)}")
+        log.info(f"Error deleting batch {batch_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2309,7 +2311,7 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
     annotation_id = str(annotation.get("id", ""))
 
     if not client_code or not original_filename:
-        print(f"Missing client_code or filename in task data: {task_data!r}")
+        log.info(f"Missing client_code or filename in task data: {task_data!r}")
         return {"received": True, "action": "ignored", "reason": "missing client_code or filename"}
 
     background_tasks.add_task(
@@ -2320,7 +2322,7 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
         label_id=annotation_id,
     )
 
-    print(f"Webhook: {action} for {client_code}/{original_filename}, export queued")
+    log.info(f"Webhook: {action} for {client_code}/{original_filename}, export queued")
     return {"received": True, "action": "export_queued", "client_code": client_code, "filename": original_filename}
 
 
