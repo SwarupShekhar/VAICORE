@@ -21,7 +21,12 @@ jobs:
 
       - name: Deploy via SSH
         run: |
-          ssh -i ~/.ssh/vultr -o StrictHostKeyChecking=no deploy@${{ secrets.VULTR_IP }} << 'EOF'
+          ssh -i ~/.ssh/vultr \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=60 \
+            -o ServerAliveCountMax=10 \
+            -o ConnectTimeout=30 \
+            deploy@${{ secrets.VULTR_IP }} << 'EOF'
             set -e
 
             REPO_URL="https://github.com/SwarupShekhar/VAICORE.git"
