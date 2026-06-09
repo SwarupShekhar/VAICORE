@@ -1189,6 +1189,229 @@ def export_and_deliver(
 
 _TASK_CACHE = {}
 
+
+def _timecode_to_seconds(tc: str) -> float:
+    try:
+        h, m, s = tc.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    except Exception:
+        return 0.0
+
+
+def export_bajaj_vad(
+    client_code: str,
+    original_filename: str,
+    project_id: str = None,
+    task_id: int = None,
+) -> Dict[str, Any]:
+    """
+    Pull QA-approved Bajaj Finance VAD annotations from Label Studio and
+    deliver a clean JSON to Azure client-delivery.
+
+    Each task was created by bajaj_processor.py — one task per segment.
+    task.data carries: segment_id, start_time, end_time, audio_clip, language.
+    Accepted annotations carry: speaker (Choices), transcript (TextArea).
+
+    Output: client-delivery/{client_code}/{client_code}_{file_id}_vad.json
+    """
+    try:
+        ls_url   = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
+        conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        proj_id  = project_id or os.getenv("LABEL_STUDIO_BAJAJ_PROJECT_ID", "9")
+        headers  = _get_ls_headers()
+
+        if not ls_url or not conn_str:
+            raise ValueError("LABEL_STUDIO_URL or AZURE_STORAGE_CONNECTION_STRING not set")
+
+        # ── 1. Fetch tasks ─────────────────────────────────────────────────────
+        matched_tasks = []
+
+        if task_id:
+            r = requests.get(f"{ls_url}/api/tasks/{task_id}", headers=headers, timeout=15)
+            if r.status_code == 200:
+                matched_tasks = [r.json()]
+
+        if not matched_tasks:
+            r = requests.get(
+                f"{ls_url}/api/tasks",
+                params={"project": proj_id, "page_size": 1000},
+                headers=headers, timeout=20,
+            )
+            all_tasks = r.json() if r.status_code == 200 else []
+            if isinstance(all_tasks, dict):
+                all_tasks = all_tasks.get("tasks", [])
+
+            skeletons = [
+                t for t in all_tasks
+                if t.get("data", {}).get("client_code") == client_code
+                and t.get("data", {}).get("filename") == original_filename
+                and (t.get("total_annotations", 0) > 0 or t.get("annotations"))
+            ]
+            for skel in skeletons:
+                tr = requests.get(
+                    f"{ls_url}/api/tasks/{skel['id']}", headers=headers, timeout=10
+                )
+                if tr.status_code == 200:
+                    matched_tasks.append(tr.json())
+
+        if not matched_tasks:
+            return {
+                "status": "error",
+                "message": (
+                    f"No annotated tasks found for {client_code}/{original_filename} "
+                    f"in project {proj_id}"
+                ),
+            }
+
+        # ── 2. Extract accepted annotations ────────────────────────────────────
+        segments: List[Dict[str, Any]] = []
+
+        for task in matched_tasks:
+            task_data = task.get("data", {})
+
+            for annotation in task.get("annotations", []):
+                if annotation.get("was_cancelled"):
+                    continue
+                if not annotation.get("is_accepted"):
+                    continue
+
+                speaker    = None
+                transcript = None
+
+                for r_item in annotation.get("result", []):
+                    fn  = r_item.get("from_name", "")
+                    val = r_item.get("value", {})
+                    if fn == "speaker":
+                        choices = val.get("choices", [])
+                        if choices:
+                            speaker = choices[0]
+                    elif fn == "transcript":
+                        texts = val.get("text", [])
+                        if texts:
+                            transcript = texts[0].strip()
+
+                if not transcript:
+                    continue
+
+                start_tc = task_data.get("start_time", "00:00:00.000")
+                end_tc   = task_data.get("end_time",   "00:00:00.000")
+                dur      = round(
+                    _timecode_to_seconds(end_tc) - _timecode_to_seconds(start_tc), 3
+                )
+
+                # task_data["language"] is stored as "Language: hi" for LS display
+                lang_raw = task_data.get("language", "hi")
+                language = lang_raw.replace("Language: ", "").strip()
+
+                segments.append({
+                    "segment_id":       task_data.get("segment_id", 0),
+                    "speaker":          speaker or "Unknown",
+                    "start_time":       start_tc,
+                    "end_time":         end_tc,
+                    "duration_seconds": max(0.0, dur),
+                    "audio_clip":       task_data.get("audio_clip", ""),
+                    "transcript":       transcript,
+                    "language":         language,
+                    "confidence":       "reviewed",
+                    "source_file":      original_filename,
+                })
+
+        if not segments:
+            return {
+                "status": "error",
+                "message": (
+                    f"No accepted annotations found for {original_filename}. "
+                    "QA must approve tasks in Label Studio before export."
+                ),
+            }
+
+        segments.sort(key=lambda s: s["segment_id"])
+
+        # ── 3. Build delivery JSON and Fetch Clips ─────────────────────────────
+        import tempfile
+        from azure.storage.blob import ContentSettings
+
+        file_id = Path(original_filename).stem
+        output_shared = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        call_date = ""
+
+        flat_segments = []
+        for seg in segments:
+            seg_id = seg["segment_id"]
+            clip_name = seg.get("audio_clip", "")
+            if not clip_name:
+                clip_name = f"{file_id}_segment_{seg_id:03d}.wav"
+            
+            flat_segments.append({
+                "Language Code": "hi",
+                "File Name": original_filename,
+                "Segment No.": seg_id,
+                "Segment File": f"audio_segments/{clip_name}",
+                "Transcription without labels": seg["transcript"],
+                "Call Date (Date and Time Stamp)": call_date,
+                "Output Shared (Date and Time Stamp)": output_shared
+            })
+
+        # ── 4. Download clips and Zip ──────────────────────────────────────────
+        svc = BlobServiceClient.from_connection_string(conn_str)
+        processing_container = svc.get_container_client("processing")
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            audio_dir = tmp_path / "audio_segments"
+            audio_dir.mkdir(parents=True, exist_ok=True)
+            
+            for seg in segments:
+                clip_name = seg.get("audio_clip", "")
+                if not clip_name:
+                    continue
+                blob_name = f"{client_code}/bajaj_clips/{file_id}/{clip_name}"
+                try:
+                    blob_client = processing_container.get_blob_client(blob_name)
+                    download_path = audio_dir / clip_name
+                    with open(download_path, "wb") as f:
+                        f.write(blob_client.download_blob().readall())
+                except Exception as e:
+                    print(f"Warning: Failed to download {blob_name} for zipping: {e}")
+
+            # Write transcript.json
+            json_path = tmp_path / "transcript.json"
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(flat_segments, f, ensure_ascii=False, indent=2)
+
+            # Zip everything: hi_YYYYMMDD_file_id.zip
+            zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}_{file_id}"
+            zip_base = str(tmp_path / zip_stem)
+            shutil.make_archive(zip_base, "zip", str(tmp_path))
+            zip_full = zip_base + ".zip"
+
+            # ── 5. Upload to Azure client-delivery ─────────────────────────────────
+            # Using the exact naming convention from specs
+            delivery_blob_name = f"{client_code}/{zip_stem}.zip"
+            bc = svc.get_blob_client(container="client-delivery", blob=delivery_blob_name)
+            with open(zip_full, "rb") as f:
+                bc.upload_blob(
+                    f, overwrite=True,
+                    content_settings=ContentSettings(content_type="application/zip"),
+                )
+
+        print(f"[bajaj_vad] {len(segments)} segments exported to client-delivery/{delivery_blob_name}")
+
+        return {
+            "status":            "success",
+            "segments_exported": len(segments),
+            "delivery_path":     f"client-delivery/{delivery_blob_name}",
+            "client_code":       client_code,
+            "source_file":       original_filename,
+        }
+
+    except Exception as e:
+        error_msg = f"export_bajaj_vad error: {e}"
+        print(error_msg)
+        return {"status": "error", "error": error_msg, "client_code": client_code}
+
+
 def check_annotation_status(
     client_code: str,
     project_id: str,
