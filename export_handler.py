@@ -1332,6 +1332,11 @@ def export_bajaj_vad(
         from azure.storage.blob import ContentSettings
 
         file_id = Path(original_filename).stem
+        
+        # Strip leading timestamp from file_id if present
+        import re
+        file_id = re.sub(r"^\d{8}_\d{6}_", "", file_id)
+        
         output_shared = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         call_date = ""

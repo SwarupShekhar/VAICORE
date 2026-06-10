@@ -99,6 +99,12 @@ _IVR_KEYWORDS = [
     "for hindi", "hindi ke liye", "हिंदी के लिए",
     "for english", "press 1", "press 2",
     "ivr", "आपकी कॉल",
+    "please stay on the line",
+    "your call is on hold",
+    "put your call on hold",
+    "thank you for calling",
+    "our menu options have changed",
+    "for english press"
 ]
 
 
@@ -669,7 +675,21 @@ def process_bajaj(
     # ── Step 1: Download ───────────────────────────────────────────────────────
     local_path, pure_filename = download_audio(filename)
     file_id = Path(pure_filename).stem          # e.g. "8b6f13e3" from "8b6f13e3.mp3"
+    
+    # Strip leading timestamp from file_id if present (e.g., 20260609_131001_)
+    import re
+    file_id = re.sub(r"^\d{8}_\d{6}_", "", file_id)
+    
     tmp_dir = Path(local_path).parent
+
+    # Extract audio via ffmpeg before processing
+    extracted_wav = str(tmp_dir / f"{file_id}_extracted.wav")
+    print(f"Extracting {local_path} -> {extracted_wav}")
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", local_path, "-vn", "-acodec", "pcm_s16le", extracted_wav],
+        check=True, capture_output=True
+    )
+    local_path = extracted_wav
 
     try:
         # ── Step 2: Detect stereo vs mono ─────────────────────────────────────
@@ -831,8 +851,7 @@ def process_bajaj(
         # ── Step 12: Upload ZIP + JSON to client-delivery ─────────────────────
         # For Bajaj, we upload the raw generated zip and json, though final delivery is post-LS.
         delivery_blob = upload_zip_to_delivery(conn, zip_full, file_id)
-        upload_json_to_delivery(conn, {"segments": transcript_data}, file_id)  # temporary wrapping for storage if needed
-
+        upload_json_to_delivery(conn, transcript_data, file_id)
         # ── Step 13: Push to Label Studio ──────────────────────────────────────
         print("Pushing segments to Label Studio...")
         ls_result = push_to_label_studio(
