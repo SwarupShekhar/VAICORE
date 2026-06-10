@@ -716,8 +716,55 @@ def process_bajaj(
                 groq, local_path, str(tmp_dir), CLIENT_CODE, language or None,
             )
         else:
-            print("Mono path — single Whisper transcription, gap-based speaker alternation")
+            print("Mono path — pyannote.audio diarization + Whisper")
             from processor import CLIENT_PROMPT_CONFIG
+            
+            # 1. Run pyannote
+            use_pyannote = False
+            speaker_segments = []
+            hf_token = (os.getenv("HF_TOKEN") or os.getenv("HF_Read_token", "")).strip('"').strip("'")
+            if hf_token:
+                print("Starting Pyannote Diarization...")
+                try:
+                    from pyannote.audio import Pipeline
+                    import torch
+                    import torchaudio
+                    
+                    _PYANNOTE_MODEL = "pyannote/speaker-diarization-3.1"
+                    pipeline = Pipeline.from_pretrained(_PYANNOTE_MODEL, token=hf_token)
+                    if torch.cuda.is_available():
+                        pipeline.to(torch.device("cuda"))
+                    else:
+                        pipeline.to(torch.device("cpu"))
+                        
+                    temp_wav_path = str(local_path) + ".16k.wav"
+                    try:
+                        subprocess.run([
+                            'ffmpeg', '-y', '-i', str(local_path),
+                            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+                            temp_wav_path
+                        ], check=True, capture_output=True)
+                        waveform, sr = torchaudio.load(temp_wav_path)
+                        print(f"Running Pyannote on waveform...")
+                        diarization = pipeline({"waveform": waveform, "sample_rate": sr})
+                    finally:
+                        if os.path.exists(temp_wav_path):
+                            os.remove(temp_wav_path)
+                            
+                    for turn, _, speaker in diarization.itertracks(yield_label=True):
+                        speaker_segments.append({
+                            "start": turn.start,
+                            "end": turn.end,
+                            "speaker": speaker
+                        })
+                    print(f"Diarization complete. Found {len(speaker_segments)} turns.")
+                    use_pyannote = True
+                except Exception as e:
+                    print(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
+            else:
+                print("HF_TOKEN not found. Skipping Pyannote Diarization.")
+
+            # 2. Whisper Transcription
             _kw: Dict[str, Any] = dict(
                 model="whisper-large-v3",
                 response_format="verbose_json",
@@ -731,6 +778,7 @@ def process_bajaj(
                 resp = groq.audio.transcriptions.create(file=f, **_kw)
             detected_lang = getattr(resp, "language", None) or language or "hi"
             raw_segs = []
+            
             speaker  = "Speaker A"
             last_end = 0.0
             for s in (getattr(resp, "segments", []) or []):
@@ -741,8 +789,21 @@ def process_bajaj(
                 st  = (s.get("start") if isd else getattr(s, "start", 0)) or 0.0
                 en  = (s.get("end")   if isd else getattr(s, "end",   0)) or 0.0
                 lp  = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
-                if st - last_end > 0.5:
-                    speaker = "Speaker B" if speaker == "Speaker A" else "Speaker A"
+                
+                if use_pyannote and speaker_segments:
+                    dominant_speaker = "Unknown"
+                    max_overlap = 0
+                    for p_seg in speaker_segments:
+                        overlap = min(en, p_seg["end"]) - max(st, p_seg["start"])
+                        if overlap > max_overlap:
+                            max_overlap = overlap
+                            dominant_speaker = p_seg["speaker"]
+                    if dominant_speaker != "Unknown":
+                        speaker = dominant_speaker
+                else:
+                    if st - last_end > 0.5:
+                        speaker = "Speaker B" if speaker == "Speaker A" else "Speaker A"
+                        
                 raw_segs.append({"start": st, "end": en, "text": txt,
                                   "speaker": speaker, "avg_logprob": lp})
                 last_end = en
