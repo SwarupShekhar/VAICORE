@@ -39,10 +39,10 @@ jobs:
             else
               echo "📦 Pulling latest code..."
               cd "$DEPLOY_DIR"
-              # Only remove specific known transient files that block merge — NEVER wipe the entire directory
+              # Stash any uncommitted changes to allow clean pull
+              git stash
+              # Remove labelstudio-data from tracking if it exists
               git rm -r --cached labelstudio-data/ 2>/dev/null || true
-              # Remove only the specific tracked files that git reports as conflicts (NOT the whole directory)
-              git status --short | grep '^?' | awk '{print $2}' | grep '^labelstudio-data/' | xargs -r rm -f || true
               git pull --rebase origin main
             fi
 
