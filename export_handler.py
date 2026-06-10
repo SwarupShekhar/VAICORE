@@ -1455,9 +1455,9 @@ def check_annotation_status(
                     if r.status_code == 200:
                         resp = r.json()
                         all_tasks = resp if isinstance(resp, list) else resp.get("tasks", [])
-                        _TASK_CACHE[cache_key] = {"tasks": all_tasks, "time": now}
                     else:
                         all_tasks = []
+                    _TASK_CACHE[cache_key] = {"tasks": all_tasks, "time": now}
 
                 tasks_for_file = [
                     t for t in all_tasks
