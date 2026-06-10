@@ -42,7 +42,7 @@ load_dotenv()
 # ── Module-level configuration ─────────────────────────────────────────────────
 
 CLIENT_CODE         = "CLIENT002"
-UNKNOWN_THRESHOLD   = float(os.getenv("BAJAJ_UNKNOWN_THRESHOLD", "-0.4"))
+UNKNOWN_THRESHOLD   = float(os.getenv("BAJAJ_UNKNOWN_THRESHOLD", "-2.0"))
 DEFAULT_LANGUAGE    = os.getenv("BAJAJ_LANGUAGE", "hi")
 SEGMENT_MERGE_GAP_S    = 2.0   # merge same-speaker segments whose gap is ≤ this
 MAX_SEGMENT_DURATION_S = 30.0  # never produce a segment longer than this
