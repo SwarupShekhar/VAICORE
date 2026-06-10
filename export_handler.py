@@ -1346,7 +1346,7 @@ def export_bajaj_vad(
             seg_id = seg["segment_id"]
             clip_name = seg.get("audio_clip", "")
             if not clip_name:
-                clip_name = f"{file_id}_segment_{seg_id:03d}.wav"
+                clip_name = f"{file_id}_segment_{seg_id}.wav"
             
             flat_segments.append({
                 "Language Code": "hi",
@@ -1385,8 +1385,8 @@ def export_bajaj_vad(
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(flat_segments, f, ensure_ascii=False, indent=2)
 
-            # Zip everything: hi_YYYYMMDD_file_id.zip
-            zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}_{file_id}"
+            # Zip everything: language-code_date.zip -> hi_YYYYMMDD.zip
+            zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}"
             zip_base = str(tmp_path / zip_stem)
             shutil.make_archive(zip_base, "zip", str(tmp_path))
             zip_full = zip_base + ".zip"

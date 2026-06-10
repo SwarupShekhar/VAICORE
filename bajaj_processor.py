@@ -780,7 +780,7 @@ def process_bajaj(
             lp       = s.get("avg_logprob") or 0.0
             processed = postprocess(s["text"], lp, threshold)
             duration  = round(s["end"] - s["start"], 3)
-            clip_name = f"{file_id}_segment_{i:03d}.wav"
+            clip_name = f"{file_id}_segment_{i}.wav"
 
             final_segments.append({
                 # Delivery fields (go in JSON)
