@@ -45,6 +45,7 @@ class JobCategory(enum.Enum):
     CLICKSTREAM = "clickstream"
     TRANSCRIPT = "transcript"
     AUTO = "auto"
+    BAJAJ = "bajaj"
 
 
 # ===========================================================================
