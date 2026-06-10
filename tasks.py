@@ -42,6 +42,14 @@ def task_run_full_pipeline(self, *args, **kwargs):
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
 
 @celery.task(bind=True, base=PipelineTask, max_retries=3)
+def task_run_bajaj_pipeline(self, *args, **kwargs):
+    try:
+        from main import run_bajaj_pipeline
+        asyncio.run(run_bajaj_pipeline(*args, **kwargs))
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
+
+@celery.task(bind=True, base=PipelineTask, max_retries=3)
 def task_run_jewelry_pipeline(self, *args, **kwargs):
     try:
         from main import run_jewelry_pipeline

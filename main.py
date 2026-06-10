@@ -626,6 +626,14 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
             original_filename=safe_filename,
             timestamp=timestamp,
         )
+    elif category == "bajaj":
+        task_run_bajaj_pipeline.delay(
+            blob_filename=blob_name,
+            client_code=client_code,
+            language=language,
+            original_filename=safe_filename,
+            timestamp=timestamp,
+        )
     elif category == "form":
         task_run_form_pipeline.delay(
             blob_filename=blob_name,
@@ -1329,18 +1337,39 @@ async def run_full_pipeline(
                     log.info(f"Label Studio push failed: {error_detail}")
                     await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", labelstudio_error=error_detail)
             except Exception as e:
-                log.info(f"Error pushing to Labelbox: {str(e)}")
-                await update_log_status(client_code, original_filename, timestamp, "Failed (Labelbox)", labelbox_error=str(e))
+                log.error(f"Error pushing to Label Studio: {e}", exc_info=True)
+                await update_log_status(client_code, original_filename, timestamp, "Failed (Label Studio)", labelstudio_error=str(e))
         else:
-            log.info(f"Audio processing failed: {result.get('error')}")
-            await update_log_status(client_code, original_filename, timestamp, "Failed (Audio)")
+            log.error(f"Audio processing failed: {result.get('error')}")
+            await update_log_status(client_code, original_filename, timestamp, "Failed", error=result.get('error', 'Unknown error'))
 
     except Exception as e:
-        log.info(f"Pipeline error: {str(e)}")
-        try:
-            await update_log_status(client_code, original_filename, timestamp, "Error")
-        except Exception:
-            pass
+        log.error(f"Pipeline error for {client_code}/{blob_filename}: {e}", exc_info=True)
+        await update_log_status(client_code, original_filename, timestamp, "Failed", error=str(e))
+
+
+async def run_bajaj_pipeline(
+    blob_filename: str,
+    client_code: str,
+    language: str,
+    original_filename: str,
+    timestamp: str,
+):
+    try:
+        from bajaj_processor import process_bajaj
+        log.info(f"Starting bajaj pipeline for {client_code}/{blob_filename}")
+        await update_log_status(client_code, original_filename, timestamp, "Transcribing")
+
+        result = await asyncio.to_thread(process_bajaj, blob_filename, language)
+        if result['status'] == 'success':
+            log.info(f"Bajaj processing complete: {result.get('segments_produced', 0)} segments")
+            await update_log_status(client_code, original_filename, timestamp, "In Review (Bajaj)")
+        else:
+            await update_log_status(client_code, original_filename, timestamp, "Failed", error=result.get("error", "Unknown"))
+    except Exception as e:
+        log.error(f"Error in bajaj pipeline: {e}")
+        await update_log_status(client_code, original_filename, timestamp, "Failed", error=str(e))
+
 
 
 async def resolve_image_category(client_code: str, original_filename: str) -> str:
