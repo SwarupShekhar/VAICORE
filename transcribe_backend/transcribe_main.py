@@ -19,7 +19,8 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Samsung Transcription Portal API")
 
 # Setup Redis Queue
-redis_conn = Redis()
+redis_url = os.getenv("REDIS_URL", "redis://valkey:6379")
+redis_conn = Redis.from_url(redis_url)
 q = Queue(connection=redis_conn)
 
 # Setup CORS for the frontend
