@@ -1,0 +1,9 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch
+torchvision
+torchaudio
+runpod==1.6.2
+openai-whisper
+stable-ts
+pyannote.audio
+requests

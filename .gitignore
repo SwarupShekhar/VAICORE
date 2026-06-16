@@ -37,3 +37,11 @@ weightestimation.md
 collateral_signatures.json
 
 .env.example
+
+# Transcription Portal Local Data
+*.db
+*.mp4
+*.mp3
+*.wav
+*.srt
+transcribe_backend/uploads/

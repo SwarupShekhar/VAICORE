@@ -884,6 +884,10 @@ def process_bajaj(
 
         # ── Step 10: Build delivery JSON (public fields only) ──────────────────
         call_date = ""
+        m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_", pure_filename)
+        if m:
+            call_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}:{m.group(6)}"
+            
         output_shared = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         transcript_data = []

@@ -1340,6 +1340,9 @@ def export_bajaj_vad(
         output_shared = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         call_date = ""
+        m = re.match(r"^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_", Path(original_filename).stem)
+        if m:
+            call_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}:{m.group(6)}"
 
         flat_segments = []
         for seg in segments:
