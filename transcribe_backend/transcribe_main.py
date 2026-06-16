@@ -6,12 +6,12 @@ import uuid
 import datetime
 import os
 
-from database import engine, get_db
-import models
-import auth
+from .database import engine, get_db
+from . import models
+from . import auth
 from redis import Redis
 from rq import Queue
-from transcriber import process_transcription_job
+from .transcriber import process_transcription_job
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)

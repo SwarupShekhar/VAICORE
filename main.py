@@ -2358,12 +2358,6 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # -- Samsung Transcription Portal Mounts --
-import sys
-import os
-backend_path = os.path.join(os.path.dirname(__file__), "transcribe_backend")
-if backend_path not in sys.path:
-    sys.path.append(backend_path)
-
-from transcribe_main import app as transcribe_app
+from transcribe_backend.transcribe_main import app as transcribe_app
 app.mount("/transcribe_api", transcribe_app)
 app.mount("/transcribe", StaticFiles(directory="transcribe_frontend", html=True), name="transcribe_frontend")

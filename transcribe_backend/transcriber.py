@@ -1,8 +1,8 @@
 import os
 import datetime
 import traceback
-from database import SessionLocal, engine
-import models
+from .database import SessionLocal, engine
+from . import models
 
 # Lazy load model to prevent PyTorch multiprocessing deadlocks on macOS when RQ forks
 model = None
