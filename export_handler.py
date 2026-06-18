@@ -1388,8 +1388,8 @@ def export_bajaj_vad(
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(flat_segments, f, ensure_ascii=False, indent=2)
 
-            # Zip everything: language-code_date.zip -> hi_YYYYMMDD.zip
-            zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}"
+            # Zip everything: language-code_date.zip -> hi_YYYYMMDD_file_id.zip
+            zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}_{file_id}"
             zip_base = str(tmp_path / zip_stem)
             shutil.make_archive(zip_base, "zip", str(tmp_path))
             zip_full = zip_base + ".zip"

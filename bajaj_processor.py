@@ -398,10 +398,13 @@ def apply_boundary_padding(segments: List[Dict], audio_duration: float) -> List[
         gap_left  = orig_starts[i] - prev_end
         gap_right = next_start - orig_ends[i]
 
-        if gap_left >= BOUNDARY_PADDING_S * 2:
-            out[i]["start"] = max(prev_end, orig_starts[i] - BOUNDARY_PADDING_S)
-        if gap_right >= BOUNDARY_PADDING_S * 2:
-            out[i]["end"] = min(next_start, orig_ends[i] + BOUNDARY_PADDING_S)
+        if gap_left > 0:
+            pad = min(BOUNDARY_PADDING_S, gap_left / 2.0)
+            out[i]["start"] = max(prev_end, orig_starts[i] - pad)
+        
+        if gap_right > 0:
+            pad = min(BOUNDARY_PADDING_S, gap_right / 2.0)
+            out[i]["end"] = min(next_start, orig_ends[i] + pad)
 
     return [s for s in out if round(s["end"] - s["start"], 3) > 0]
 
@@ -810,6 +813,13 @@ def process_bajaj(
 
         print(f"Whisper segments: {len(raw_segs)} | Language: {detected_lang}")
 
+        # ── Step 3.5: Assign orig_id and apply padding before filtering ────────
+        for i, s in enumerate(raw_segs, 1):
+            s["orig_id"] = i
+
+        audio_dur = get_audio_duration(local_path)
+        raw_segs  = apply_boundary_padding(raw_segs, audio_dur)
+
         # ── Step 4: Filter IVR ─────────────────────────────────────────────────
         before_ivr = len(raw_segs)
         raw_segs   = [s for s in raw_segs if not is_ivr_segment(s["text"])]
@@ -821,11 +831,7 @@ def process_bajaj(
         raw_segs = merge_close_segments(raw_segs)
         print(f"After merge: {len(raw_segs)} segment(s)")
 
-        # ── Step 6: Boundary padding ───────────────────────────────────────────
-        audio_dur = get_audio_duration(local_path)
-        raw_segs  = apply_boundary_padding(raw_segs, audio_dur)
-
-        # ── Step 7: Build final segment records ────────────────────────────────
+        # ── Step 6: Build final segment records ────────────────────────────────
         # Detect Agent vs Customer by content (company name in opening),
         # not just channel order — recording layout varies per file.
         SPEAKER_MAP = detect_speaker_map(raw_segs)
@@ -836,16 +842,17 @@ def process_bajaj(
         audio_segments_dir.mkdir(exist_ok=True)
 
         final_segments: List[Dict] = []
-        for i, s in enumerate(raw_segs, 1):
+        for s in raw_segs:
+            orig_i   = s.get("orig_id", 0)
             speaker  = SPEAKER_MAP.get(s["speaker"], s["speaker"])
             lp       = s.get("avg_logprob") or 0.0
             processed = postprocess(s["text"], lp, threshold)
             duration  = round(s["end"] - s["start"], 3)
-            clip_name = f"{file_id}_segment_{i}.wav"
+            clip_name = f"{file_id}_segment_{orig_i}.wav"
 
             final_segments.append({
                 # Delivery fields (go in JSON)
-                "segment_id":      i,
+                "segment_id":      orig_i,
                 "speaker":         speaker,
                 "start_time":      seconds_to_timecode(s["start"]),
                 "end_time":        seconds_to_timecode(s["end"]),
@@ -891,11 +898,11 @@ def process_bajaj(
         output_shared = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         transcript_data = []
-        for i, seg in enumerate(final_segments, 1):
+        for seg in final_segments:
             transcript_data.append({
                 "Language Code": "hi",
                 "File Name": pure_filename,
-                "Segment No.": i,
+                "Segment No.": seg["segment_id"],
                 "Segment File": f"audio_segments/{seg['audio_clip']}",
                 "Transcription without labels": seg["transcript"],
                 "Call Date (Date and Time Stamp)": call_date,

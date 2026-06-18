@@ -46,7 +46,8 @@ from tasks import (
     task_run_form_pipeline,
     task_run_clickstream_pipeline,
     task_run_transcript_pipeline,
-    task_run_zip_batch_pipeline
+    task_run_zip_batch_pipeline,
+    task_run_bajaj_pipeline
 )
 
 async def get_project_id_for_file(client_code: str, filename: str) -> str:
@@ -69,6 +70,8 @@ async def get_project_id_for_file(client_code: str, filename: str) -> str:
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_FORM_PROJECT_ID", "3")
                 elif cat == "clickstream":
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
+                elif cat == "bajaj":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_BAJAJ_PROJECT_ID", "9")
     except Exception:
         pass
 
