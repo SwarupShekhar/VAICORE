@@ -47,7 +47,7 @@ from tasks import (
     task_run_clickstream_pipeline,
     task_run_transcript_pipeline,
     task_run_zip_batch_pipeline,
-    task_run_bajaj_pipeline
+    task_run_vad_pipeline
 )
 
 async def get_project_id_for_file(client_code: str, filename: str) -> str:
@@ -70,8 +70,8 @@ async def get_project_id_for_file(client_code: str, filename: str) -> str:
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_FORM_PROJECT_ID", "3")
                 elif cat == "clickstream":
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
-                elif cat == "bajaj":
-                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_BAJAJ_PROJECT_ID", "9")
+                elif cat == "vad":
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_VAD_PROJECT_ID", "9")
     except Exception:
         pass
 
@@ -629,8 +629,8 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
             original_filename=safe_filename,
             timestamp=timestamp,
         )
-    elif category == "bajaj":
-        task_run_bajaj_pipeline.delay(
+    elif category == "vad":
+        task_run_vad_pipeline.delay(
             blob_filename=blob_name,
             client_code=client_code,
             language=language,
@@ -662,13 +662,22 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
     else:
         # A. Dispatch Audio Files
         if file.content_type in audio_types or is_audio_by_extension:
-            task_run_full_pipeline.delay(
-                blob_filename=blob_name,
-                client_code=client_code,
-                language=language,
-                original_filename=safe_filename,
-                timestamp=timestamp,
-            )
+            if client_code.lower() == "bajaj":
+                task_run_vad_pipeline.delay(
+                    blob_filename=blob_name,
+                    client_code=client_code,
+                    language=language,
+                    original_filename=safe_filename,
+                    timestamp=timestamp,
+                )
+            else:
+                task_run_full_pipeline.delay(
+                    blob_filename=blob_name,
+                    client_code=client_code,
+                    language=language,
+                    original_filename=safe_filename,
+                    timestamp=timestamp,
+                )
         # B. Dispatch Secure Form Scans / Documents
         elif (
             file.content_type in doc_types 
@@ -1351,7 +1360,7 @@ async def run_full_pipeline(
         await update_log_status(client_code, original_filename, timestamp, "Failed", error=str(e))
 
 
-async def run_bajaj_pipeline(
+async def run_vad_pipeline(
     blob_filename: str,
     client_code: str,
     language: str,
@@ -1359,14 +1368,14 @@ async def run_bajaj_pipeline(
     timestamp: str,
 ):
     try:
-        from bajaj_processor import process_bajaj
+        from vad_processor import process_vad
         log.info(f"Starting bajaj pipeline for {client_code}/{blob_filename}")
         await update_log_status(client_code, original_filename, timestamp, "Transcribing")
 
-        result = await asyncio.to_thread(process_bajaj, blob_filename, language)
+        result = await asyncio.to_thread(process_vad, blob_filename, language)
         if result['status'] == 'success':
             log.info(f"Bajaj processing complete: {result.get('segments_produced', 0)} segments")
-            await update_log_status(client_code, original_filename, timestamp, "In Review (Bajaj)")
+            await update_log_status(client_code, original_filename, timestamp, "In Review")
         else:
             await update_log_status(client_code, original_filename, timestamp, "Failed", error=result.get("error", "Unknown"))
     except Exception as e:

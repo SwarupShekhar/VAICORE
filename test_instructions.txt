@@ -1,0 +1,7 @@
+Great! Since you've uploaded it, the `bajaj` pipeline should be running right now inside the celery worker.
+
+You should be able to see it in your portal's **Processing Queue** first, and when it's done, it will automatically package the `hi_YYYYMMDD_filename.zip` and drop it into the **Ready to Download** section.
+
+If you have the server logs still open (`docker compose logs -f celery-worker`), you should see it happily churning through the audio and writing the segment JSON. 
+
+Does it show up in the "Ready to Download" section for you now?

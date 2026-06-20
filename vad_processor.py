@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-bajaj_processor.py — Voice as Data pipeline for Bajaj Finance / Navana.ai
+vad_processor.py — Voice as Data pipeline for Bajaj Finance / Navana.ai
 
 CLI:
-    python bajaj_processor.py <filename.mp3> [--language hi] [--threshold -0.4]
-    python bajaj_processor.py --print-xml          # print LS config and exit
+    python vad_processor.py <filename.mp3> [--language hi] [--threshold -0.4]
+    python vad_processor.py --print-xml          # print LS config and exit
 
 Flow:
   1. Download stereo audio from Azure client-intake/CLIENT002/<filename>
@@ -13,7 +13,7 @@ Flow:
      Low-confidence segments (avg_logprob < threshold) → transcript = <UNKNOWN>
   4. Segmentation: filter IVR, merge ≤2s same-speaker gaps, 250ms boundary padding
   5. Split into per-segment 16kHz mono WAV clips via ffmpeg
-  6. Upload clips to Azure processing/CLIENT002/bajaj_clips/<file_id>/
+  6. Upload clips to Azure processing/CLIENT002/vad_clips/<file_id>/
   7. Bundle clips + transcript JSON → ZIP → Azure client-delivery/CLIENT002/
   8. Push one Label Studio task per segment (clip URL + pre-filled transcript + speaker)
   9. After LS QA approval, export_handler (Bajaj mode — TBD) produces final delivery
@@ -42,22 +42,22 @@ load_dotenv()
 # ── Module-level configuration ─────────────────────────────────────────────────
 
 CLIENT_CODE         = "CLIENT002"
-UNKNOWN_THRESHOLD   = float(os.getenv("BAJAJ_UNKNOWN_THRESHOLD", "-2.0"))
-DEFAULT_LANGUAGE    = os.getenv("BAJAJ_LANGUAGE", "hi")
+UNKNOWN_THRESHOLD   = float(os.getenv("VAD_UNKNOWN_THRESHOLD", "-2.0"))
+DEFAULT_LANGUAGE    = os.getenv("VAD_LANGUAGE", "hi")
 SEGMENT_MERGE_GAP_S    = 2.0   # merge same-speaker segments whose gap is ≤ this
 MAX_SEGMENT_DURATION_S = 30.0  # never produce a segment longer than this
 BOUNDARY_PADDING_S  = 0.250  # 250ms silence padding applied to each boundary
 CLIP_SAMPLE_RATE    = 8000
 CLIP_CHANNELS       = 1
 CLIP_CODEC          = "pcm_s16le"
-LS_MODEL_VERSION    = "bajaj-whisper-v1"
-_BAJAJ_PROJECT_ID   = os.getenv("LABEL_STUDIO_BAJAJ_PROJECT_ID", "9")
+LS_MODEL_VERSION    = "vad-whisper-v1"
+_VAD_PROJECT_ID   = os.getenv("LABEL_STUDIO_VAD_PROJECT_ID", "9")
 
 # ── Label Studio XML config ────────────────────────────────────────────────────
 # Paste this into Label Studio → Project Settings → Labeling Interface.
-# Run: python bajaj_processor.py --print-xml
+# Run: python vad_processor.py --print-xml
 
-BAJAJ_LS_XML = """<View>
+VAD_LS_XML = """<View>
   <Header value="Bajaj Finance — Voice as Data Review"/>
 
   <View style="display:flex; gap:16px; align-items:flex-start; margin-bottom:12px;">
@@ -485,7 +485,7 @@ def download_audio(filename: str) -> Tuple[str, str]:
         raise FileNotFoundError(f"No blob in client-intake matching {CLIENT_CODE}/*{filename}")
     blob_name = sorted(matches)[-1]
     pure      = blob_name.split("/")[-1]
-    tmp_dir   = Path(f"/tmp/vaidikai_bajaj/{uuid.uuid4().hex}")
+    tmp_dir   = Path(f"/tmp/vaidikai_vad/{uuid.uuid4().hex}")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     local_path = str(tmp_dir / pure)
     with open(local_path, "wb") as f:
@@ -495,8 +495,8 @@ def download_audio(filename: str) -> Tuple[str, str]:
 
 
 def upload_clip_to_processing(conn_str: str, clip_path: Path, file_id: str) -> str:
-    """Upload one WAV clip to processing/CLIENT002/bajaj_clips/<file_id>/. Returns SAS URL."""
-    blob_name = f"{CLIENT_CODE}/bajaj_clips/{file_id}/{clip_path.name}"
+    """Upload one WAV clip to processing/CLIENT002/vad_clips/<file_id>/. Returns SAS URL."""
+    blob_name = f"{CLIENT_CODE}/vad_clips/{file_id}/{clip_path.name}"
     svc = BlobServiceClient.from_connection_string(conn_str)
     bc  = svc.get_blob_client(container="processing", blob=blob_name)
     with open(clip_path, "rb") as f:
@@ -656,11 +656,11 @@ def push_to_label_studio(
 
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
-def process_bajaj(
+def process_vad(
     filename: str,
     language: str = DEFAULT_LANGUAGE,
     threshold: float = UNKNOWN_THRESHOLD,
-    project_id: str = _BAJAJ_PROJECT_ID,
+    project_id: str = _VAD_PROJECT_ID,
 ) -> Dict[str, Any]:
     """
     Full Voice as Data pipeline for one Bajaj Finance audio file.
@@ -671,7 +671,7 @@ def process_bajaj(
         raise ValueError("AZURE_STORAGE_CONNECTION_STRING not set")
 
     print(f"\n{'='*62}")
-    print(f"BAJAJ VOICE AS DATA — {filename}")
+    print(f"VOICE AS DATA — {filename}")
     print(f"Language: {language} | UNKNOWN threshold: {threshold} | LS project: {project_id}")
     print(f"{'='*62}")
 
@@ -707,83 +707,39 @@ def process_bajaj(
 
         # ── Step 3: Transcribe ─────────────────────────────────────────────────
         from openai import OpenAI as _OAI
-        groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            raise ValueError("GROQ_API_KEY not set")
-        groq = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+        # Switch from Groq to RunPod Self-Hosted Whisper
+        runpod_key = os.getenv("RUNPOD_API_KEY")
+        runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+        if not runpod_key or not runpod_endpoint:
+            raise ValueError("RUNPOD_API_KEY or RUNPOD_WHISPER_ENDPOINT not set in .env")
+        
+        runpod_base_url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1"
+        transcribe_client = _OAI(api_key=runpod_key, base_url=runpod_base_url)
 
         if stereo:
             # Reuse the dual-channel energy diarization from processor.py
             from processor import transcribe_dual_channel, CLIENT_PROMPT_CONFIG
             raw_segs, detected_lang = transcribe_dual_channel(
-                groq, local_path, str(tmp_dir), CLIENT_CODE, language or None,
+                transcribe_client, local_path, str(tmp_dir), CLIENT_CODE, language or None,
             )
         else:
-            print("Mono path — pyannote.audio diarization + Whisper")
+            print("Mono path — single-channel customer audio")
             from processor import CLIENT_PROMPT_CONFIG
             
-            # 1. Run pyannote
-            use_pyannote = False
-            speaker_segments = []
-            hf_token = (os.getenv("HF_TOKEN") or os.getenv("HF_Read_token", "")).strip('"').strip("'")
-            if hf_token:
-                print("Starting Pyannote Diarization...")
-                try:
-                    from pyannote.audio import Pipeline
-                    import torch
-                    import torchaudio
-                    
-                    _PYANNOTE_MODEL = "pyannote/speaker-diarization-3.1"
-                    pipeline = Pipeline.from_pretrained(_PYANNOTE_MODEL, token=hf_token)
-                    if torch.cuda.is_available():
-                        pipeline.to(torch.device("cuda"))
-                    else:
-                        pipeline.to(torch.device("cpu"))
-                        
-                    temp_wav_path = str(local_path) + ".16k.wav"
-                    try:
-                        subprocess.run([
-                            'ffmpeg', '-y', '-i', str(local_path),
-                            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
-                            temp_wav_path
-                        ], check=True, capture_output=True)
-                        waveform, sr = torchaudio.load(temp_wav_path)
-                        print(f"Running Pyannote on waveform...")
-                        diarization = pipeline({"waveform": waveform, "sample_rate": sr})
-                    finally:
-                        if os.path.exists(temp_wav_path):
-                            os.remove(temp_wav_path)
-                            
-                    for turn, _, speaker in diarization.itertracks(yield_label=True):
-                        speaker_segments.append({
-                            "start": turn.start,
-                            "end": turn.end,
-                            "speaker": speaker
-                        })
-                    print(f"Diarization complete. Found {len(speaker_segments)} turns.")
-                    use_pyannote = True
-                except Exception as e:
-                    print(f"Pyannote Diarization failed: {e}. Falling back to gap-based diarization.")
-            else:
-                print("HF_TOKEN not found. Skipping Pyannote Diarization.")
-
-            # 2. Whisper Transcription
+            # 1. Whisper Transcription
             _kw: Dict[str, Any] = dict(
                 model="whisper-large-v3",
                 response_format="verbose_json",
                 timestamp_granularities=["segment"],
                 temperature=0,
+                language="hi",
                 prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
             )
-            if language:
-                _kw["language"] = language
             with open(local_path, "rb") as f:
-                resp = groq.audio.transcriptions.create(file=f, **_kw)
+                resp = transcribe_client.audio.transcriptions.create(file=f, **_kw)
             detected_lang = getattr(resp, "language", None) or language or "hi"
             raw_segs = []
             
-            speaker  = "Speaker A"
-            last_end = 0.0
             for s in (getattr(resp, "segments", []) or []):
                 isd = isinstance(s, dict)
                 txt = ((s.get("text") if isd else getattr(s, "text", "")) or "").strip()
@@ -793,29 +749,10 @@ def process_bajaj(
                 en  = (s.get("end")   if isd else getattr(s, "end",   0)) or 0.0
                 lp  = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
                 
-                if use_pyannote and speaker_segments:
-                    dominant_speaker = "Unknown"
-                    max_overlap = 0
-                    for p_seg in speaker_segments:
-                        overlap = min(en, p_seg["end"]) - max(st, p_seg["start"])
-                        if overlap > max_overlap:
-                            max_overlap = overlap
-                            dominant_speaker = p_seg["speaker"]
-                    if dominant_speaker != "Unknown":
-                        speaker = dominant_speaker
-                else:
-                    if st - last_end > 0.5:
-                        speaker = "Speaker B" if speaker == "Speaker A" else "Speaker A"
-                        
                 raw_segs.append({"start": st, "end": en, "text": txt,
-                                  "speaker": speaker, "avg_logprob": lp})
-                last_end = en
+                                  "speaker": "Customer", "avg_logprob": lp})
 
         print(f"Whisper segments: {len(raw_segs)} | Language: {detected_lang}")
-
-        # ── Step 3.5: Assign orig_id and apply padding before filtering ────────
-        for i, s in enumerate(raw_segs, 1):
-            s["orig_id"] = i
 
         audio_dur = get_audio_duration(local_path)
         raw_segs  = apply_boundary_padding(raw_segs, audio_dur)
@@ -830,6 +767,10 @@ def process_bajaj(
         # ── Step 5: Merge same-speaker segments with gap ≤ 2s ─────────────────
         raw_segs = merge_close_segments(raw_segs)
         print(f"After merge: {len(raw_segs)} segment(s)")
+
+        # ── Step 5.5: Assign orig_id AFTER merging so turns are sequential ───────
+        for i, s in enumerate(raw_segs, 1):
+            s["orig_id"] = i
 
         # ── Step 6: Build final segment records ────────────────────────────────
         # Detect Agent vs Customer by content (company name in opening),
@@ -899,9 +840,10 @@ def process_bajaj(
 
         transcript_data = []
         for seg in final_segments:
+            clean_filename = re.sub(r'^\d{8}_\d{6}_', '', pure_filename)
             transcript_data.append({
                 "Language Code": "hi",
-                "File Name": pure_filename,
+                "File Name": clean_filename,
                 "Segment No.": seg["segment_id"],
                 "Segment File": f"audio_segments/{seg['audio_clip']}",
                 "Transcription without labels": seg["transcript"],
@@ -955,14 +897,14 @@ def process_bajaj(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Bajaj Finance Voice as Data pipeline",
+        description="Voice as Data pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python bajaj_processor.py call_001.mp3
-  python bajaj_processor.py call_001.mp3 --language hi --threshold -0.4
-  python bajaj_processor.py call_001.mp3 --ls-project 10
-  python bajaj_processor.py --print-xml
+  python vad_processor.py call_001.mp3
+  python vad_processor.py call_001.mp3 --language hi --threshold -0.4
+  python vad_processor.py call_001.mp3 --ls-project 10
+  python vad_processor.py --print-xml
         """,
     )
     parser.add_argument(
@@ -978,8 +920,8 @@ Examples:
         help=f"avg_logprob threshold for <UNKNOWN> tag (default: {UNKNOWN_THRESHOLD})",
     )
     parser.add_argument(
-        "--ls-project", default=_BAJAJ_PROJECT_ID,
-        help=f"Label Studio project ID (default: {_BAJAJ_PROJECT_ID})",
+        "--ls-project", default=_VAD_PROJECT_ID,
+        help=f"Label Studio project ID (default: {_VAD_PROJECT_ID})",
     )
     parser.add_argument(
         "--print-xml", action="store_true",
@@ -988,13 +930,13 @@ Examples:
     args = parser.parse_args()
 
     if args.print_xml:
-        print(BAJAJ_LS_XML)
+        print(VAD_LS_XML)
         sys.exit(0)
 
     if not args.filename:
         parser.error("filename is required (or use --print-xml)")
 
-    result = process_bajaj(
+    result = process_vad(
         args.filename,
         language=args.language,
         threshold=args.threshold,

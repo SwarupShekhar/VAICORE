@@ -62,6 +62,9 @@ def export_and_deliver(
     For jewelry projects, generates a Gold Standard Bundle (.zip) with audit images,
     COCO JSON, and runs duplicate collateral detection before delivery.
     """
+    if str(project_id) == os.getenv("LABEL_STUDIO_VAD_PROJECT_ID", "9"):
+        return export_vad(client_code, original_filename, project_id)
+
     try:
         print(f"Starting XLSX export and delivery for {client_code}/{original_filename}")
 
@@ -1198,7 +1201,7 @@ def _timecode_to_seconds(tc: str) -> float:
         return 0.0
 
 
-def export_bajaj_vad(
+def export_vad(
     client_code: str,
     original_filename: str,
     project_id: str = None,
@@ -1208,7 +1211,7 @@ def export_bajaj_vad(
     Pull QA-approved Bajaj Finance VAD annotations from Label Studio and
     deliver a clean JSON to Azure client-delivery.
 
-    Each task was created by bajaj_processor.py — one task per segment.
+    Each task was created by vad_processor.py — one task per segment.
     task.data carries: segment_id, start_time, end_time, audio_clip, language.
     Accepted annotations carry: speaker (Choices), transcript (TextArea).
 
@@ -1217,7 +1220,7 @@ def export_bajaj_vad(
     try:
         ls_url   = os.getenv("LABEL_STUDIO_URL", "").rstrip("/")
         conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-        proj_id  = project_id or os.getenv("LABEL_STUDIO_BAJAJ_PROJECT_ID", "9")
+        proj_id  = project_id or os.getenv("LABEL_STUDIO_VAD_PROJECT_ID", "9")
         headers  = _get_ls_headers()
 
         if not ls_url or not conn_str:
@@ -1374,7 +1377,7 @@ def export_bajaj_vad(
                 clip_name = seg.get("audio_clip", "")
                 if not clip_name:
                     continue
-                blob_name = f"{client_code}/bajaj_clips/{file_id}/{clip_name}"
+                blob_name = f"{client_code}/vad_clips/{file_id}/{clip_name}"
                 try:
                     blob_client = processing_container.get_blob_client(blob_name)
                     download_path = audio_dir / clip_name
@@ -1410,12 +1413,13 @@ def export_bajaj_vad(
             "status":            "success",
             "segments_exported": len(segments),
             "delivery_path":     f"client-delivery/{delivery_blob_name}",
+            "xlsx_filename":     f"{zip_stem}.zip",
             "client_code":       client_code,
             "source_file":       original_filename,
         }
 
     except Exception as e:
-        error_msg = f"export_bajaj_vad error: {e}"
+        error_msg = f"export_vad error: {e}"
         print(error_msg)
         return {"status": "error", "error": error_msg, "client_code": client_code}
 

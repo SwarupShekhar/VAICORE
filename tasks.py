@@ -1,10 +1,21 @@
 import asyncio
+import sys
 from celery import Task
+from celery.signals import worker_process_init
+
 from celery_app import celery
 from upload_log_db import update_log_status
 from logger import get_logger
 
 log = get_logger("vaidikai.tasks")
+
+@worker_process_init.connect
+def setup_worker_process(**kwargs):
+    if "/app" not in sys.path:
+        sys.path.insert(0, "/app")
+        
+    from database import engine
+    engine.sync_engine.dispose()
 
 class PipelineTask(Task):
     def on_failure(self, exc, task_id, args, kwargs, einfo):
@@ -36,17 +47,27 @@ class PipelineTask(Task):
 @celery.task(bind=True, base=PipelineTask, max_retries=3)
 def task_run_full_pipeline(self, *args, **kwargs):
     try:
+        import traceback, os
+        log.error(f"SYS.PATH is: {sys.path}")
+        log.error(f"CWD is: {os.getcwd()}")
+        log.error(f"APP DIR CONTENTS: {os.listdir('/app')}")
         from main import run_full_pipeline
         asyncio.run(run_full_pipeline(*args, **kwargs))
     except Exception as exc:
+        log.error(f"IMPORT ERROR TRACEBACK: {traceback.format_exc()}")
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
 
 @celery.task(bind=True, base=PipelineTask, max_retries=3)
-def task_run_bajaj_pipeline(self, *args, **kwargs):
+def task_run_vad_pipeline(self, *args, **kwargs):
     try:
-        from main import run_bajaj_pipeline
-        asyncio.run(run_bajaj_pipeline(*args, **kwargs))
+        import traceback, os
+        log.error(f"SYS.PATH is: {sys.path}")
+        log.error(f"CWD is: {os.getcwd()}")
+        log.error(f"APP DIR CONTENTS: {os.listdir('/app')}")
+        from main import run_vad_pipeline
+        asyncio.run(run_vad_pipeline(*args, **kwargs))
     except Exception as exc:
+        log.error(f"IMPORT ERROR TRACEBACK: {traceback.format_exc()}")
         raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
 
 @celery.task(bind=True, base=PipelineTask, max_retries=3)
