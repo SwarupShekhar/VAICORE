@@ -730,7 +730,6 @@ def process_vad(
             _kw: Dict[str, Any] = dict(
                 model="whisper-large-v3",
                 response_format="verbose_json",
-                timestamp_granularities=["segment"],
                 temperature=0,
                 language="hi",
                 prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
