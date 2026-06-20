@@ -71,7 +71,7 @@ async def get_project_id_for_file(client_code: str, filename: str) -> str:
                 elif cat == "clickstream":
                     return get_client_project_id(client_code, cat, "LABEL_STUDIO_CLICKSTREAM_PROJECT_ID", "4")
                 elif cat == "vad":
-                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_VAD_PROJECT_ID", "9")
+                    return get_client_project_id(client_code, cat, "LABEL_STUDIO_VAD_PROJECT_ID", "1")
     except Exception:
         pass
 

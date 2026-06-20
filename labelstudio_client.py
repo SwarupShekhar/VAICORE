@@ -62,7 +62,7 @@ def get_client_project_id(client_code: str, project_type: str, fallback_env_var:
         return env_val
         
     if fallback_env_var == "LABEL_STUDIO_PROJECT_ID" or fallback_env_var == "LABEL_STUDIO_AUDIO_PROJECT_ID":
-        return "8"
+        return "1"
     elif fallback_env_var == "LABEL_STUDIO_HOUSING_PROJECT_ID":
         return "5"
     elif fallback_env_var == "LABEL_STUDIO_BUSINESS_PROJECT_ID":
