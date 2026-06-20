@@ -707,14 +707,12 @@ def process_vad(
 
         # ── Step 3: Transcribe ─────────────────────────────────────────────────
         from openai import OpenAI as _OAI
-        # Switch from Groq to RunPod Self-Hosted Whisper
-        runpod_key = os.getenv("RUNPOD_API_KEY")
-        runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
-        if not runpod_key or not runpod_endpoint:
-            raise ValueError("RUNPOD_API_KEY or RUNPOD_WHISPER_ENDPOINT not set in .env")
+        # Revert to Groq API (RunPod Faster-Whisper does not support OpenAI SDK route natively)
+        groq_key = os.getenv("GROQ_API_KEY")
+        if not groq_key:
+            raise ValueError("GROQ_API_KEY not set in .env")
         
-        runpod_base_url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1"
-        transcribe_client = _OAI(api_key=runpod_key, base_url=runpod_base_url)
+        transcribe_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
 
         if stereo:
             # Reuse the dual-channel energy diarization from processor.py
@@ -726,10 +724,12 @@ def process_vad(
             print("Mono path — single-channel customer audio")
             from processor import CLIENT_PROMPT_CONFIG
             
-            # 1. Whisper Transcription — RunPod only supports: model, file, language, response_format
+            # 1. Whisper Transcription (Groq supports full OpenAI spec)
             _kw: Dict[str, Any] = dict(
                 model="whisper-large-v3",
                 response_format="verbose_json",
+                temperature=0,
+                prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
                 language="hi",
             )
             with open(local_path, "rb") as f:
