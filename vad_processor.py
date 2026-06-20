@@ -726,13 +726,11 @@ def process_vad(
             print("Mono path — single-channel customer audio")
             from processor import CLIENT_PROMPT_CONFIG
             
-            # 1. Whisper Transcription
+            # 1. Whisper Transcription — RunPod only supports: model, file, language, response_format
             _kw: Dict[str, Any] = dict(
                 model="whisper-large-v3",
                 response_format="verbose_json",
-                temperature=0,
                 language="hi",
-                prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
             )
             with open(local_path, "rb") as f:
                 resp = transcribe_client.audio.transcriptions.create(file=f, **_kw)
