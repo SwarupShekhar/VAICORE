@@ -11,8 +11,8 @@ async def fix():
         print("Updated CLIENT002 project_ids.")
         
     # 2. Safely add the 'vad' enum using autocommit
-    from database import async_engine
-    async with async_engine.connect() as conn:
+    from database import engine
+    async with engine.connect() as conn:
         await conn.execution_options(isolation_level="AUTOCOMMIT")
         try:
             await conn.execute(text("ALTER TYPE job_category_enum ADD VALUE IF NOT EXISTS 'vad';"))
