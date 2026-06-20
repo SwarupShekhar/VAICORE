@@ -730,8 +730,10 @@ def process_vad(
                 response_format="verbose_json",
                 temperature=0,
                 prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
-                language="hi",
             )
+            if language:
+                _kw["language"] = language
+                
             with open(local_path, "rb") as f:
                 resp = transcribe_client.audio.transcriptions.create(file=f, **_kw)
             detected_lang = getattr(resp, "language", None) or language or "hi"
