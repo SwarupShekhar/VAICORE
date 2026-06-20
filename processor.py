@@ -229,6 +229,13 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
     if language:
         _kw["language"] = language
         log.info(f"Mixed transcription: language pinned to '{language}'")
+        
+    # RunPod's Whisper endpoint does not support OpenAI-specific parameters
+    if "runpod" in str(groq_client.base_url):
+        _kw.pop("timestamp_granularities", None)
+        _kw.pop("temperature", None)
+        _kw.pop("prompt", None)
+        
     with open(local_audio_path, "rb") as f:
         r = groq_client.audio.transcriptions.create(file=f, **_kw)
     detected_language = getattr(r, 'language', None) or (language or 'auto')
