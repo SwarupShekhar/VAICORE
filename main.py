@@ -1169,16 +1169,24 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
 
 @app.delete("/api/admin/jobs/{client_code}/{filename}")
 async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str = Cookie(None)):
-    """Deletes an old or failed job from the upload log, tidying up the operations center."""
+    """Deletes an old or failed job from the upload log and Azure to prevent ghost syncing."""
     _check_admin(vaicore_admin)
     try:
+        # 1. Delete from local database
         logs = await load_upload_log(client_code=client_code)
         job_exists = any(log.get("filename") == filename for log in logs)
         if job_exists:
             await delete_log_entry(client_code, filename)
-            return {"success": True, "message": "Job deleted successfully"}
-        else:
-            return {"success": False, "message": "Job not found"}
+            
+        # 2. Delete from Azure so the background scanner doesn't auto-resync it!
+        async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as blob_service_client:
+            container = blob_service_client.get_container_client("client-intake")
+            async for blob in container.list_blobs(name_starts_with=f"{client_code}/"):
+                if filename in blob.name:
+                    await container.delete_blob(blob.name)
+                    log.info(f"Deleted ghost file from Azure: {blob.name}")
+                    
+        return {"success": True, "message": "Job deleted successfully from DB and Azure"}
             
     except Exception as e:
         log.info(f"Admin delete error: {e}")
