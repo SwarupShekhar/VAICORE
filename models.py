@@ -46,6 +46,7 @@ class JobCategory(enum.Enum):
     TRANSCRIPT = "transcript"
     AUTO = "auto"
     BAJAJ = "bajaj"
+    VAD = "vad"
 
 
 # ===========================================================================
