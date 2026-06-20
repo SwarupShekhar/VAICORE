@@ -30,12 +30,22 @@ if not DATABASE_URL:
 logger.info("Initializing async database engine...")
 
 # Create Async Engine with specific pool sizing
-engine = create_async_engine(
-    DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-)
+import sys
+from sqlalchemy.pool import NullPool
+
+is_celery = sys.argv and "celery" in sys.argv[0]
+if is_celery:
+    engine = create_async_engine(
+        DATABASE_URL,
+        poolclass=NullPool,
+    )
+else:
+    engine = create_async_engine(
+        DATABASE_URL,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
 
 # Create AsyncSession Factory
 AsyncSessionLocal = async_sessionmaker(
