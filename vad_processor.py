@@ -706,15 +706,10 @@ def process_vad(
         print(f"Audio: {'STEREO — channel=speaker' if stereo else 'MONO — gap-based diarization'}")
 
         # ── Step 3: Transcribe ─────────────────────────────────────────────────
-        from openai import OpenAI as _OAI
-        # Revert to Groq API (RunPod Faster-Whisper does not support OpenAI SDK route natively)
-        groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            raise ValueError("GROQ_API_KEY not set in .env")
-        
-        transcribe_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-
         if stereo:
+            from openai import OpenAI as _OAI
+            groq_key = os.getenv("GROQ_API_KEY")
+            transcribe_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
             # Reuse the dual-channel energy diarization from processor.py
             from processor import transcribe_dual_channel, CLIENT_PROMPT_CONFIG
             raw_segs, detected_lang = transcribe_dual_channel(
@@ -722,31 +717,50 @@ def process_vad(
             )
         else:
             print("Mono path — single-channel customer audio")
+            import requests
             from processor import CLIENT_PROMPT_CONFIG
             
-            # 1. Whisper Transcription (Groq supports full OpenAI spec)
-            _kw: Dict[str, Any] = dict(
-                model="whisper-large-v3",
-                response_format="verbose_json",
-                temperature=0,
-                prompt=CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, ""),
-            )
+            runpod_api_key = os.getenv("RUNPOD_API_KEY")
+            runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+            
+            if not runpod_api_key or not runpod_endpoint:
+                raise ValueError("RUNPOD_API_KEY or RUNPOD_WHISPER_ENDPOINT not set in .env")
+
+            # Bypass the openai Python SDK entirely to avoid the 400 Bad Request
+            # caused by Pydantic validation on hidden params (timestamp_granularities).
+            url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {runpod_api_key}"}
+            
+            data = {
+                "model": "whisper-large-v3",
+                "response_format": "verbose_json",
+                "temperature": "0"
+            }
             if language:
-                _kw["language"] = language
-                
+                data["language"] = language
+            
+            prompt = CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, "")
+            if prompt:
+                data["prompt"] = prompt
+
             with open(local_path, "rb") as f:
-                resp = transcribe_client.audio.transcriptions.create(file=f, **_kw)
-            detected_lang = getattr(resp, "language", None) or language or "hi"
+                files = {"file": (os.path.basename(local_path), f, "audio/wav")}
+                print(f"Sending raw requests.post to RunPod endpoint {runpod_endpoint}...")
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+            
+            resp.raise_for_status()
+            result_json = resp.json()
+            
+            detected_lang = result_json.get("language", language or "hi")
             raw_segs = []
             
-            for s in (getattr(resp, "segments", []) or []):
-                isd = isinstance(s, dict)
-                txt = ((s.get("text") if isd else getattr(s, "text", "")) or "").strip()
+            for s in (result_json.get("segments", []) or []):
+                txt = (s.get("text", "") or "").strip()
                 if not txt:
                     continue
-                st  = (s.get("start") if isd else getattr(s, "start", 0)) or 0.0
-                en  = (s.get("end")   if isd else getattr(s, "end",   0)) or 0.0
-                lp  = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
+                st  = s.get("start", 0.0) or 0.0
+                en  = s.get("end", 0.0) or 0.0
+                lp  = s.get("avg_logprob", 0.0) or 0.0
                 
                 raw_segs.append({"start": st, "end": en, "text": txt,
                                   "speaker": "Customer", "avg_logprob": lp})
