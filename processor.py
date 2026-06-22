@@ -43,7 +43,7 @@ CLIENT_PROMPT_CONFIG = {
     # in that language's own native script (Hindi->Devanagari, English->Latin,
     # Hinglish as spoken). Do NOT add Devanagari or Latin domain phrases here.
     'DEFAULT': "",
-    'CLIENT002': "This is a conversation in Hindi and English. Please transcribe accurately without any Chinese or foreign characters.",
+    'CLIENT002': "This is a conversation in an Indian language mixed with English. Transcribe exactly as spoken in the native script. Do not translate. Do not output any Chinese or foreign characters. Haan ji, okay.",
 }
 
 # Rule-based tagging rules
