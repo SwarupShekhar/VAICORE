@@ -61,7 +61,9 @@ async def append_upload_log(entry: dict) -> None:
         client_res = await session.execute(client_stmt)
         client_id = client_res.scalar_one_or_none()
         if not client_id:
-            raise ValueError(f"Client code {client_code} not found")
+            import logging
+            logging.getLogger("vaidikai.main").warning(f"Client code {client_code} not found, skipping log append.")
+            return
 
         entry_status = entry.get("status")
         entry_status = LEGACY_STATUS_MAP.get(entry_status, entry_status)
