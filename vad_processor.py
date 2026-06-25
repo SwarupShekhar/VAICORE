@@ -738,7 +738,6 @@ def process_vad(
                     }
                     
                     import base64
-                    import subprocess
                     runpod_mp3 = local_path + ".runpod.mp3"
                     subprocess.run(["ffmpeg", "-y", "-i", local_path, "-ar", "16000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
                     with open(runpod_mp3, "rb") as f:
