@@ -46,7 +46,7 @@ CLIENT_PROMPT_CONFIG = {
     # in that language's own native script (Hindi->Devanagari, English->Latin,
     # Hinglish as spoken). Do NOT add Devanagari or Latin domain phrases here.
     'DEFAULT': "",
-    'CLIENT002': "",
+    'CLIENT002': "नमस्कार, बजाज फायनान्स (Bajaj Finance), ईएमआय (EMI), लोन, हप्ता, वस्तू खरेदी, होय, नाही, ठीक आहे.",
 }
 
 # Rule-based tagging rules
