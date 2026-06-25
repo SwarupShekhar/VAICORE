@@ -235,7 +235,7 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
         }
         
         import base64
-        runpod_mp3 = local_audio_path + ".runpod.mp3"
+        runpod_mp3 = str(local_audio_path) + ".runpod.mp3"
         subprocess.run(["ffmpeg", "-y", "-i", local_audio_path, "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
         with open(runpod_mp3, "rb") as f:
             audio_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -254,7 +254,6 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
             payload["input"]["initial_prompt"] = prompt
             payload["input"]["prompt"] = prompt
             
-        import time
         url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
         try:
             resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
@@ -591,7 +590,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         }
                         
                         import base64
-                        runpod_mp3 = local_audio_path + ".runpod.mp3"
+                        runpod_mp3 = str(local_audio_path) + ".runpod.mp3"
                         subprocess.run(["ffmpeg", "-y", "-i", local_audio_path, "-ar", "16000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
                         with open(runpod_mp3, "rb") as f:
                             audio_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -611,7 +610,6 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                             payload["input"]["prompt"] = prompt
                             
                         try:
-                            import time
                             url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
                             print(f"Sending base64 JSON payload to RunPod run endpoint {runpod_endpoint}...")
                             resp = requests.post(url_run, headers=headers, json=payload, timeout=30)

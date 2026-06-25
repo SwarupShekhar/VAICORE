@@ -24,6 +24,7 @@ import re
 import sys
 import json
 import shutil
+import time
 import subprocess
 import argparse
 import uuid
@@ -738,7 +739,7 @@ def process_vad(
                     }
                     
                     import base64
-                    runpod_mp3 = local_path + ".runpod.mp3"
+                    runpod_mp3 = str(local_path) + ".runpod.mp3"
                     subprocess.run(["ffmpeg", "-y", "-i", local_path, "-ar", "16000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
                     with open(runpod_mp3, "rb") as f:
                         audio_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -757,7 +758,6 @@ def process_vad(
                         payload["input"]["initial_prompt"] = prompt
                         payload["input"]["prompt"] = prompt
 
-                    import time
                     url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
                     print(f"Sending base64 JSON payload to RunPod run endpoint {runpod_endpoint}...")
                     resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
