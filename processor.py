@@ -258,7 +258,7 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                         "response_format": "verbose_json",
                         "timestamp_granularities": "segment",
                         "temperature": "0.0",
-                        "vad_filter": "true",
+                        "vad_filter": "false",
                     }
                     if lang:
                         data["language"] = lang
