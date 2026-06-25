@@ -755,16 +755,32 @@ def process_vad(
                         payload["input"]["initial_prompt"] = prompt
                         payload["input"]["prompt"] = prompt
 
-                    print(f"Sending base64 JSON payload to RunPod runsync endpoint {runpod_endpoint}...")
-                    resp = requests.post(url, headers=headers, json=payload, timeout=600)
-                    
+                    import time
+                    url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
+                    print(f"Sending base64 JSON payload to RunPod run endpoint {runpod_endpoint}...")
+                    resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
                     resp.raise_for_status()
-                    runpod_data = resp.json()
-                    
-                    if runpod_data.get("status") == "COMPLETED" and "output" in runpod_data:
-                        result_json = runpod_data["output"]
-                    else:
-                        result_json = runpod_data
+                    job_data = resp.json()
+                    job_id = job_data.get("id")
+                    if not job_id:
+                        raise ValueError(f"RunPod returned no job ID: {job_data}")
+                        
+                    url_status = f"https://api.runpod.ai/v2/{runpod_endpoint}/status/{job_id}"
+                    runpod_data = None
+                    for _ in range(120):
+                        time.sleep(5)
+                        s_resp = requests.get(url_status, headers=headers, timeout=30)
+                        s_resp.raise_for_status()
+                        runpod_data = s_resp.json()
+                        if runpod_data.get("status") == "COMPLETED":
+                            break
+                        elif runpod_data.get("status") == "FAILED":
+                            raise ValueError(f"RunPod job failed: {runpod_data}")
+                            
+                    if runpod_data.get("status") != "COMPLETED":
+                        raise TimeoutError("RunPod timed out.")
+                        
+                    result_json = runpod_data.get("output", {})
                     
                     detected_lang = result_json.get("language", detected_lang)
                     
