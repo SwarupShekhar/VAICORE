@@ -236,7 +236,8 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                     "model": "Systran/faster-whisper-large-v3",
                     "response_format": "verbose_json",
                     "timestamp_granularities[]": "segment",
-                    "temperature": 0
+                    "temperature": 0,
+                    "task": "transcribe"
                 }
                 if language:
                     data["language"] = language
@@ -557,7 +558,8 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                                     "model": "Systran/faster-whisper-large-v3",
                                     "response_format": "verbose_json",
                                     "timestamp_granularities[]": "segment",
-                                    "temperature": 0
+                                    "temperature": 0,
+                                    "task": "transcribe"
                                 }
                                 if language:
                                     data["language"] = language

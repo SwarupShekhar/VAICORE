@@ -737,7 +737,8 @@ def process_vad(
                             "model": "Systran/faster-whisper-large-v3",
                             "response_format": "verbose_json",
                             "timestamp_granularities[]": "segment",
-                            "temperature": 0
+                            "temperature": 0,
+                            "task": "transcribe"
                         }
                         if language:
                             data["language"] = language
