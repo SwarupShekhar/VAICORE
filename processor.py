@@ -232,18 +232,28 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
         try:
             with open(local_audio_path, "rb") as f:
                 files = {"file": f}
+                # This server (faster-whisper-server) /v1/audio/transcriptions
+                # accepts ONLY: file, model, language, prompt, response_format,
+                # temperature, timestamp_granularities, stream, hotwords,
+                # vad_filter. Any other field (condition_on_previous_text, task,
+                # vad_parameters) is SILENTLY DROPPED by FastAPI. The repetition
+                # loop is driven by the server's baked condition_on_previous_text=
+                # True -> fix that via server redeploy (env/config). Client-side
+                # we cut seeding by passing domain terms as `hotwords` (gentle
+                # bias) instead of `prompt` (=initial_prompt, a strong repetition
+                # seed on noisy 8kHz). temperature is a single float here, not a
+                # fallback array — sending a list 422s the request.
                 data = {
                     "model": "Systran/faster-whisper-large-v3",
                     "response_format": "verbose_json",
-                    "timestamp_granularities[]": "segment",
-                    "task": "transcribe",
+                    "timestamp_granularities": "segment",
+                    "temperature": "0.0",
                     "vad_filter": "true",
-                    "condition_on_previous_text": "false"
                 }
                 if language:
                     data["language"] = language
                 if prompt:
-                    data["prompt"] = prompt
+                    data["hotwords"] = prompt
                 
                 resp = requests.post(raw_url, files=files, data=data, timeout=600)
                 resp.raise_for_status()
@@ -555,18 +565,21 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         try:
                             with open(local_audio_path, "rb") as f:
                                 files = {"file": f}
+                                # See note in transcribe_mixed(): this server only
+                                # honors a fixed field set; condition_on_previous_text
+                                # is dropped (fix via server config). Use hotwords,
+                                # not prompt, to avoid seeding the repetition loop.
                                 data = {
                                     "model": "Systran/faster-whisper-large-v3",
                                     "response_format": "verbose_json",
-                                    "timestamp_granularities[]": "segment",
-                                    "task": "transcribe",
+                                    "timestamp_granularities": "segment",
+                                    "temperature": "0.0",
                                     "vad_filter": "true",
-                                    "condition_on_previous_text": "false"
                                 }
                                 if language:
                                     data["language"] = language
                                 if prompt:
-                                    data["prompt"] = prompt
+                                    data["hotwords"] = prompt
                                 
                                 resp = requests.post(raw_url, files=files, data=data, timeout=600)
                                 resp.raise_for_status()
