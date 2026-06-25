@@ -217,30 +217,75 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
 
     # 1. Transcribe the full mixed audio once.
     prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-    _kw = dict(
-        model="whisper-large-v3",
-        response_format="verbose_json",
-        timestamp_granularities=["segment"],
-        temperature=0,  # anti-hallucination
-        prompt=prompt,
-    )
-    # Pin the language when the uploader chose one. Auto-detect mis-fires on
-    # Indian-language narrowband telephony (Tamil call -> Kannada/Hindi), and
-    # wrong-language detection is a primary cause of heavy content loss.
-    if language:
-        _kw["language"] = language
-        log.info(f"Mixed transcription: language pinned to '{language}'")
+    detected_language = language or "auto"
+    raw = []
+    
+    # Primary: RunPod Serverless (requests.post bypass for timestamp_granularities)
+    runpod_api_key = os.getenv("RUNPOD_API_KEY")
+    runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+    runpod_success = False
+    
+    if runpod_api_key and runpod_endpoint:
+        log.info("Trying RunPod as primary transcription engine...")
+        import requests
+        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {runpod_api_key}"}
+        data = {
+            "model": "whisper-large-v3",
+            "response_format": "verbose_json",
+            "temperature": "0"
+        }
+        if language:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+            
+        try:
+            with open(local_audio_path, "rb") as f:
+                files = {"file": (os.path.basename(local_audio_path), f, "audio/wav")}
+                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+            resp.raise_for_status()
+            r_json = resp.json()
+            detected_language = r_json.get("language", detected_language)
+            # Parse segments
+            for s in (r_json.get("segments", []) or []):
+                st = s.get("start", 0.0) or 0.0
+                en = s.get("end", 0.0) or 0.0
+                txt = (s.get("text", "") or "").strip()
+                lp = s.get("avg_logprob", 0.0) or 0.0
+                raw.append({"start": st, "end": en, "text": txt, "avg_logprob": lp})
+            runpod_success = True
+            log.info("RunPod transcription successful.")
+        except Exception as e:
+            log.error(f"RunPod failed: {e}. Falling back to Groq...")
+            runpod_success = False
+
+    # Fallback: Groq SDK
+    if not runpod_success:
+        log.info("Using Groq API fallback...")
+        _kw = dict(
+            model="whisper-large-v3",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+            temperature=0,  # anti-hallucination
+            prompt=prompt,
+        )
+        if language:
+            _kw["language"] = language
         
-    # RunPod's Whisper endpoint does not support OpenAI-specific parameters
-    if "runpod" in str(groq_client.base_url):
-        _kw.pop("timestamp_granularities", None)
-        _kw.pop("temperature", None)
-        _kw.pop("prompt", None)
+        with open(local_audio_path, "rb") as f:
+            r = groq_client.audio.transcriptions.create(file=f, **_kw)
         
-    with open(local_audio_path, "rb") as f:
-        r = groq_client.audio.transcriptions.create(file=f, **_kw)
-    detected_language = getattr(r, 'language', None) or (language or 'auto')
-    raw = getattr(r, 'segments', []) or []
+        detected_language = getattr(r, 'language', None) or detected_language
+        raw_segs = getattr(r, 'segments', []) or []
+        for s in raw_segs:
+            isd = isinstance(s, dict)
+            st = (s.get("start") if isd else getattr(s, "start", 0.0)) or 0.0
+            en = (s.get("end") if isd else getattr(s, "end", 0.0)) or 0.0
+            txt = (s.get("text") if isd else getattr(s, "text", "")).strip()
+            lp = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
+            raw.append({"start": st, "end": en, "text": txt, "avg_logprob": lp})
+
     log.info(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
 
     # 2. Split channels (energy measurement only — never transcribed).
@@ -490,44 +535,89 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     if not temp_segments:
                         raise Exception("Dual-channel transcription produced no segments")
                 else:
-                    log.info("Starting transcription with Groq (Whisper Large-v3)...")
-                    _mkw = dict(
-                        model="whisper-large-v3",
-                        response_format="verbose_json",
-                        timestamp_granularities=["segment"],
-                        temperature=0,
-                        prompt=CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-                    )
-                    if language:
-                        _mkw["language"] = language
-                        log.info(f"Mono transcription: language pinned to '{language}'")
-                    with open(local_audio_path, "rb") as f:
-                        response = groq_client.audio.transcriptions.create(file=f, **_mkw)
-
-                    detected_language = getattr(response, 'language', None) or (language or 'auto')
-                    log.info(f"Transcription complete. Detected language: {detected_language}")
-
-                    # Single-call segment-level output. Whisper segments cover
-                    # the full audio contiguously; absolute timestamps line up
-                    # with the pyannote turns computed on the SAME full audio.
-                    raw_segments = getattr(response, 'segments', []) or []
-                    response_text = getattr(response, 'text', '') or ''
-
+                    log.info("Starting Mono transcription...")
+                    
+                    prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
+                    detected_language = language or "auto"
                     norm_segments = []
-                    for seg in raw_segments:
-                        is_d = isinstance(seg, dict)
-                        norm_segments.append({
-                            "text": ((seg.get('text') if is_d else getattr(seg, 'text', '')) or ''),
-                            "start": ((seg.get('start') if is_d else getattr(seg, 'start', 0)) or 0),
-                            "end": ((seg.get('end') if is_d else getattr(seg, 'end', 0)) or 0),
-                            "avg_logprob": ((seg.get('avg_logprob') if is_d else getattr(seg, 'avg_logprob', 0.0)) or 0.0),
-                        })
-
+                    response_text = ""
+                    
+                    runpod_api_key = os.getenv("RUNPOD_API_KEY")
+                    runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+                    runpod_success = False
+                    
+                    if runpod_api_key and runpod_endpoint:
+                        log.info("Trying RunPod for Mono as primary...")
+                        import requests
+                        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
+                        headers = {"Authorization": f"Bearer {runpod_api_key}"}
+                        data = {
+                            "model": "whisper-large-v3",
+                            "response_format": "verbose_json",
+                            "temperature": "0"
+                        }
+                        if language:
+                            data["language"] = language
+                        if prompt:
+                            data["prompt"] = prompt
+                            
+                        try:
+                            with open(local_audio_path, "rb") as f:
+                                files = {"file": (os.path.basename(local_audio_path), f, "audio/wav")}
+                                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+                            resp.raise_for_status()
+                            r_json = resp.json()
+                            
+                            detected_language = r_json.get("language", detected_language)
+                            response_text = r_json.get("text", "")
+                            
+                            for s in (r_json.get("segments", []) or []):
+                                st = s.get("start", 0.0) or 0.0
+                                en = s.get("end", 0.0) or 0.0
+                                txt = (s.get("text", "") or "").strip()
+                                lp = s.get("avg_logprob", 0.0) or 0.0
+                                norm_segments.append({
+                                    "text": txt, "start": st, "end": en, "avg_logprob": lp
+                                })
+                            runpod_success = True
+                            log.info("RunPod Mono transcription successful.")
+                        except Exception as e:
+                            log.error(f"RunPod Mono failed: {e}. Falling back to Groq...")
+                            runpod_success = False
+                            
+                    if not runpod_success:
+                        log.info("Starting transcription with Groq (Whisper Large-v3) fallback...")
+                        _mkw = dict(
+                            model="whisper-large-v3",
+                            response_format="verbose_json",
+                            timestamp_granularities=["segment"],
+                            temperature=0,
+                            prompt=prompt
+                        )
+                        if language:
+                            _mkw["language"] = language
+                        with open(local_audio_path, "rb") as f:
+                            response = groq_client.audio.transcriptions.create(file=f, **_mkw)
+    
+                        detected_language = getattr(response, 'language', None) or detected_language
+                        raw_segments = getattr(response, 'segments', []) or []
+                        response_text = getattr(response, 'text', '') or ''
+                        
+                        norm_segments = []
+                        for seg in raw_segments:
+                            is_d = isinstance(seg, dict)
+                            norm_segments.append({
+                                "text": ((seg.get('text') if is_d else getattr(seg, 'text', '')) or ''),
+                                "start": ((seg.get('start') if is_d else getattr(seg, 'start', 0)) or 0),
+                                "end": ((seg.get('end') if is_d else getattr(seg, 'end', 0)) or 0),
+                                "avg_logprob": ((seg.get('avg_logprob') if is_d else getattr(seg, 'avg_logprob', 0.0)) or 0.0),
+                            })
+                            
                     # Last resort: no segments but we have text -> single block.
                     if not norm_segments and response_text.strip():
                         norm_segments = [{"text": response_text.strip(), "start": 0, "end": 0, "avg_logprob": 0.0}]
 
-                    log.info(f"Groq segments: {len(norm_segments)} | full text length: {len(response_text)} chars")
+                    log.info(f"Segments parsed: {len(norm_segments)} | full text length: {len(response_text)} chars")
 
                     temp_segments = []
                     current_speaker = "Speaker A"

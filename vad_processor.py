@@ -720,50 +720,86 @@ def process_vad(
             import requests
             from processor import CLIENT_PROMPT_CONFIG
             
-            runpod_api_key = os.getenv("RUNPOD_API_KEY")
-            runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
-            
-            if not runpod_api_key or not runpod_endpoint:
-                raise ValueError("RUNPOD_API_KEY or RUNPOD_WHISPER_ENDPOINT not set in .env")
-
-            # Bypass the openai Python SDK entirely to avoid the 400 Bad Request
-            # caused by Pydantic validation on hidden params (timestamp_granularities).
-            url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
-            headers = {"Authorization": f"Bearer {runpod_api_key}"}
-            
-            data = {
-                "model": "whisper-large-v3",
-                "response_format": "verbose_json",
-                "temperature": "0"
-            }
-            if language:
-                data["language"] = language
-            
             prompt = CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, "")
-            if prompt:
-                data["prompt"] = prompt
-
-            with open(local_path, "rb") as f:
-                files = {"file": (os.path.basename(local_path), f, "audio/wav")}
-                print(f"Sending raw requests.post to RunPod endpoint {runpod_endpoint}...")
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
-            
-            resp.raise_for_status()
-            result_json = resp.json()
-            
-            detected_lang = result_json.get("language", language or "hi")
+            detected_lang = language or "auto"
             raw_segs = []
             
-            for s in (result_json.get("segments", []) or []):
-                txt = (s.get("text", "") or "").strip()
-                if not txt:
-                    continue
-                st  = s.get("start", 0.0) or 0.0
-                en  = s.get("end", 0.0) or 0.0
-                lp  = s.get("avg_logprob", 0.0) or 0.0
+            runpod_api_key = os.getenv("RUNPOD_API_KEY")
+            runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+            runpod_success = False
+            
+            if runpod_api_key and runpod_endpoint:
+                try:
+                    # Bypass the openai Python SDK entirely to avoid the 400 Bad Request
+                    url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
+                    headers = {"Authorization": f"Bearer {runpod_api_key}"}
+                    
+                    data = {
+                        "model": "whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "temperature": "0"
+                    }
+                    if language:
+                        data["language"] = language
+                    if prompt:
+                        data["prompt"] = prompt
+
+                    with open(local_path, "rb") as f:
+                        files = {"file": (os.path.basename(local_path), f, "audio/wav")}
+                        print(f"Sending raw requests.post to RunPod endpoint {runpod_endpoint}...")
+                        resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+                    
+                    resp.raise_for_status()
+                    result_json = resp.json()
+                    
+                    detected_lang = result_json.get("language", detected_lang)
+                    
+                    for s in (result_json.get("segments", []) or []):
+                        txt = (s.get("text", "") or "").strip()
+                        if not txt:
+                            continue
+                        st  = s.get("start", 0.0) or 0.0
+                        en  = s.get("end", 0.0) or 0.0
+                        lp  = s.get("avg_logprob", 0.0) or 0.0
+                        
+                        raw_segs.append({"start": st, "end": en, "text": txt,
+                                          "speaker": "Customer", "avg_logprob": lp})
+                    runpod_success = True
+                    print("RunPod Mono transcription successful.")
+                except Exception as e:
+                    print(f"RunPod Mono failed: {e}. Falling back to Groq...")
+                    runpod_success = False
+
+            if not runpod_success:
+                print("Using Groq API fallback for Mono transcription...")
+                from openai import OpenAI as _OAI
+                groq_key = os.getenv("GROQ_API_KEY")
+                groq_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
                 
-                raw_segs.append({"start": st, "end": en, "text": txt,
-                                  "speaker": "Customer", "avg_logprob": lp})
+                _kw = dict(
+                    model="whisper-large-v3",
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
+                    temperature=0,
+                    prompt=prompt,
+                )
+                if language:
+                    _kw["language"] = language
+                    
+                with open(local_path, "rb") as f:
+                    r = groq_client.audio.transcriptions.create(file=f, **_kw)
+                    
+                detected_lang = getattr(r, 'language', None) or detected_lang
+                for s in (getattr(r, 'segments', []) or []):
+                    isd = isinstance(s, dict)
+                    txt = (s.get("text") if isd else getattr(s, "text", "")).strip()
+                    if not txt:
+                        continue
+                    st = (s.get("start") if isd else getattr(s, "start", 0.0)) or 0.0
+                    en = (s.get("end") if isd else getattr(s, "end", 0.0)) or 0.0
+                    lp = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
+                    raw_segs.append({"start": st, "end": en, "text": txt,
+                                     "speaker": "Customer", "avg_logprob": lp})
 
         print(f"Whisper segments: {len(raw_segs)} | Language: {detected_lang}")
 
