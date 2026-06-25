@@ -29,6 +29,22 @@
                         <option value="vad">🗣️ Voice as Data</option>
                     </select>
                 </div>
+                <div class="field-group" style="display:flex; flex-direction:column; gap:6px; margin-top: 10px; margin-bottom: 15px;">
+                    <label for="language-select">Primary Language of Content</label>
+                    <select id="language-select">
+                        <option value="" selected>🌐 Auto-Detect (Retain Original Language)</option>
+                        <option value="en">English</option>
+                        <option value="hi">Hindi</option>
+                        <option value="mr">Marathi</option>
+                        <option value="ta">Tamil</option>
+                        <option value="bn">Bengali</option>
+                        <option value="te">Telugu</option>
+                        <option value="gu">Gujarati</option>
+                        <option value="kn">Kannada</option>
+                        <option value="ml">Malayalam</option>
+                        <option value="pa">Punjabi</option>
+                    </select>
+                </div>
                 <button type="submit" class="btn">Upload File</button>
             </form>
             <div id="upload-progress" class="progress-bar" style="display: none;">
@@ -141,6 +157,7 @@
             formData.append('client_code', clientCode);
             formData.append('file', file);
             formData.append('category', document.getElementById('category-select').value);
+            formData.append('language', document.getElementById('language-select').value);
 
             const messageDiv = document.getElementById('upload-message');
             const progressBar = document.getElementById('upload-progress');
