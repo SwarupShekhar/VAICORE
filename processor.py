@@ -254,7 +254,7 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                 # bias in the wrong language seeds hallucination loops.
                 with open(path, "rb") as f:
                     data = {
-                        "model": "Systran/faster-whisper-large-v3",
+                        "model": "Systran/faster-whisper-large-v2",
                         "response_format": "verbose_json",
                         "timestamp_granularities": "segment",
                         "temperature": "0.0",
