@@ -731,26 +731,40 @@ def process_vad(
             if runpod_api_key and runpod_endpoint:
                 try:
                     # Bypass the openai Python SDK entirely to avoid the 400 Bad Request
-                    url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
-                    headers = {"Authorization": f"Bearer {runpod_api_key}"}
+                    url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
+                    headers = {
+                        "Authorization": f"Bearer {runpod_api_key}",
+                        "Content-Type": "application/json"
+                    }
                     
-                    data = {
-                        "model": "whisper-large-v3",
-                        "response_format": "verbose_json",
-                        "temperature": "0"
+                    import base64
+                    with open(local_path, "rb") as f:
+                        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+                        
+                    payload = {
+                        "input": {
+                            "audio_base64": audio_b64,
+                            "model": "whisper-large-v3",
+                            "response_format": "verbose_json",
+                            "temperature": 0
+                        }
                     }
                     if language:
-                        data["language"] = language
+                        payload["input"]["language"] = language
                     if prompt:
-                        data["prompt"] = prompt
+                        payload["input"]["initial_prompt"] = prompt
+                        payload["input"]["prompt"] = prompt
 
-                    with open(local_path, "rb") as f:
-                        files = {"file": (os.path.basename(local_path), f, "audio/wav")}
-                        print(f"Sending raw requests.post to RunPod endpoint {runpod_endpoint}...")
-                        resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+                    print(f"Sending base64 JSON payload to RunPod runsync endpoint {runpod_endpoint}...")
+                    resp = requests.post(url, headers=headers, json=payload, timeout=600)
                     
                     resp.raise_for_status()
-                    result_json = resp.json()
+                    runpod_data = resp.json()
+                    
+                    if runpod_data.get("status") == "COMPLETED" and "output" in runpod_data:
+                        result_json = runpod_data["output"]
+                    else:
+                        result_json = runpod_data
                     
                     detected_lang = result_json.get("language", detected_lang)
                     

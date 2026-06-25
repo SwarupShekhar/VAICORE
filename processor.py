@@ -228,24 +228,40 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
     if runpod_api_key and runpod_endpoint:
         log.info("Trying RunPod as primary transcription engine...")
         import requests
-        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {runpod_api_key}"}
-        data = {
-            "model": "whisper-large-v3",
-            "response_format": "verbose_json",
-            "temperature": "0"
+        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
+        headers = {
+            "Authorization": f"Bearer {runpod_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        import base64
+        with open(local_audio_path, "rb") as f:
+            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+            
+        payload = {
+            "input": {
+                "audio_base64": audio_b64,
+                "model": "whisper-large-v3",
+                "response_format": "verbose_json",
+                "temperature": 0
+            }
         }
         if language:
-            data["language"] = language
+            payload["input"]["language"] = language
         if prompt:
-            data["prompt"] = prompt
+            payload["input"]["initial_prompt"] = prompt
+            payload["input"]["prompt"] = prompt
             
         try:
-            with open(local_audio_path, "rb") as f:
-                files = {"file": (os.path.basename(local_audio_path), f, "audio/wav")}
-                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+            resp = requests.post(url, headers=headers, json=payload, timeout=600)
             resp.raise_for_status()
-            r_json = resp.json()
+            runpod_data = resp.json()
+            
+            if runpod_data.get("status") == "COMPLETED" and "output" in runpod_data:
+                r_json = runpod_data["output"]
+            else:
+                r_json = runpod_data
+                
             detected_language = r_json.get("language", detected_language)
             # Parse segments
             for s in (r_json.get("segments", []) or []):
@@ -549,25 +565,41 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     if runpod_api_key and runpod_endpoint:
                         log.info("Trying RunPod for Mono as primary...")
                         import requests
-                        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/openai/v1/audio/transcriptions"
-                        headers = {"Authorization": f"Bearer {runpod_api_key}"}
-                        data = {
-                            "model": "whisper-large-v3",
-                            "response_format": "verbose_json",
-                            "temperature": "0"
+                        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
+                        headers = {
+                            "Authorization": f"Bearer {runpod_api_key}",
+                            "Content-Type": "application/json"
+                        }
+                        
+                        import base64
+                        with open(local_audio_path, "rb") as f:
+                            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+                            
+                        payload = {
+                            "input": {
+                                "audio_base64": audio_b64,
+                                "model": "whisper-large-v3",
+                                "response_format": "verbose_json",
+                                "temperature": 0
+                            }
                         }
                         if language:
-                            data["language"] = language
+                            payload["input"]["language"] = language
                         if prompt:
-                            data["prompt"] = prompt
+                            payload["input"]["initial_prompt"] = prompt
+                            payload["input"]["prompt"] = prompt
                             
                         try:
-                            with open(local_audio_path, "rb") as f:
-                                files = {"file": (os.path.basename(local_audio_path), f, "audio/wav")}
-                                resp = requests.post(url, headers=headers, files=files, data=data, timeout=600)
+                            print(f"Sending base64 JSON payload to RunPod runsync endpoint {runpod_endpoint}...")
+                            resp = requests.post(url, headers=headers, json=payload, timeout=600)
                             resp.raise_for_status()
-                            r_json = resp.json()
+                            runpod_data = resp.json()
                             
+                            if runpod_data.get("status") == "COMPLETED" and "output" in runpod_data:
+                                r_json = runpod_data["output"]
+                            else:
+                                r_json = runpod_data
+                                
                             detected_language = r_json.get("language", detected_language)
                             response_text = r_json.get("text", "")
                             
