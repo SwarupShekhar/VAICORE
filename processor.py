@@ -240,9 +240,9 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
             out.append(t)
         return ', '.join(out)
 
-    def _transcribe_file(path, lang):
-        """Transcribe one mono channel. RunPod primary, Groq fallback.
-        Returns (segments, detected_lang)."""
+    def _one_request(path, lang):
+        """One transcription request for an audio file. RunPod primary, Groq
+        fallback. Returns (segments, detected_lang)."""
         segs = []
         dlang = lang or "auto"
         if raw_url:
@@ -304,6 +304,69 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                 "avg_logprob": (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0,
             })
         return segs, dlang
+
+    def _loop_score(segs):
+        """Distinct-word ratio over a channel's text. ~0.5+ = healthy speech;
+        a repetition loop ('வணக்கம் வணக்கம் ...') drives it toward 0. Returns
+        1.0 for too-short input (nothing to judge)."""
+        import re as _re
+        words = []
+        for s in segs:
+            words += _re.findall(r'\S+', s.get("text", ""))
+        if len(words) < 12:
+            return 1.0
+        return len(set(words)) / len(words)
+
+    def _transcribe_file(path, lang):
+        """Transcribe one channel. Try whole-file first (best quality). If the
+        server's condition_on_previous_text=True drove it into a repetition loop
+        (low distinct-word ratio), re-transcribe in independent ~25s chunks —
+        each request resets context, breaking the loop. Language is locked to the
+        whole-file detection so noisy chunks don't mis-detect (Korean/Turkish/etc).
+        INTERIM hack until the server is redeployed with the loop fix."""
+        import math as _math
+        LOOP_THRESHOLD = 0.25
+        CHUNK = 25.0
+
+        segs, dlang = _one_request(path, lang)
+        if _loop_score(segs) >= LOOP_THRESHOLD:
+            return segs, dlang
+
+        log.warning(f"Repetition loop on {Path(path).name} "
+                    f"(distinct-word ratio {_loop_score(segs):.2f}); re-transcribing chunked.")
+        lock_lang = lang or dlang
+        try:
+            dur = float(_sp.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=nw=1:nk=1", path],
+                check=True, capture_output=True, text=True).stdout.strip())
+        except Exception:
+            return segs, dlang
+
+        chunk_segs = []
+        for i in range(_math.ceil(dur / CHUNK)):
+            st = i * CHUNK
+            cpath = f"{path}.c{i}.wav"
+            try:
+                _sp.run(["ffmpeg", "-y", "-ss", str(st), "-t", str(CHUNK),
+                         "-i", path, "-ar", "16000", "-ac", "1",
+                         "-c:a", "pcm_s16le", cpath],
+                        check=True, capture_output=True)
+                cs, _ = _one_request(cpath, lock_lang)
+                for x in cs:
+                    x["start"] += st
+                    x["end"] += st
+                    chunk_segs.append(x)
+            except Exception as e:
+                log.error(f"Chunk {i} failed: {e}")
+            finally:
+                try:
+                    os.remove(cpath)
+                except Exception:
+                    pass
+
+        # Keep whichever recovered more distinct content.
+        return (chunk_segs, dlang) if _loop_score(chunk_segs) > _loop_score(segs) else (segs, dlang)
 
     # 1. Split stereo into two mono 16kHz channels.
     ch_dir = Path(base_temp_dir) / "ch"
@@ -566,10 +629,11 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         try:
                             with open(local_audio_path, "rb") as f:
                                 files = {"file": f}
-                                # See note in transcribe_mixed(): this server only
-                                # honors a fixed field set; condition_on_previous_text
-                                # is dropped (fix via server config). Use hotwords,
-                                # not prompt, to avoid seeding the repetition loop.
+                                # See note in transcribe_dual_channel(): server
+                                # honors only a fixed field set; condition_on_previous_text
+                                # is dropped (fix via server redeploy). No prompt/
+                                # hotwords — domain bias in the wrong language seeds
+                                # hallucination loops; auto-detect instead.
                                 data = {
                                     "model": "Systran/faster-whisper-large-v3",
                                     "response_format": "verbose_json",
@@ -579,8 +643,6 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                                 }
                                 if language:
                                     data["language"] = language
-                                if prompt:
-                                    data["hotwords"] = prompt
                                 
                                 resp = requests.post(raw_url, files=files, data=data, timeout=600)
                                 resp.raise_for_status()

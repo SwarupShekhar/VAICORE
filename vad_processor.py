@@ -733,16 +733,19 @@ def process_vad(
                     import requests
                     with open(local_path, "rb") as f:
                         files = {"file": f}
+                        # Server honors only a fixed field set; "timestamp_
+                        # granularities[]" and "task" are silently dropped. Use the
+                        # correct key + vad_filter. No prompt — domain bias in the
+                        # wrong language seeds hallucination loops (auto-detect).
                         data = {
                             "model": "Systran/faster-whisper-large-v3",
                             "response_format": "verbose_json",
-                            "timestamp_granularities[]": "segment",
-                            "task": "transcribe"
+                            "timestamp_granularities": "segment",
+                            "temperature": "0.0",
+                            "vad_filter": "true",
                         }
                         if language:
                             data["language"] = language
-                        if prompt:
-                            data["prompt"] = prompt
                         
                         resp = requests.post(raw_url, files=files, data=data, timeout=600)
                         resp.raise_for_status()
