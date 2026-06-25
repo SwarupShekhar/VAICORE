@@ -734,7 +734,7 @@ def process_vad(
                     with open(local_path, "rb") as f:
                         files = {"file": f}
                         data = {
-                            "model": "whisper-large-v3",
+                            "model": "Systran/faster-whisper-large-v3",
                             "response_format": "verbose_json",
                             "timestamp_granularities[]": "segment",
                             "temperature": 0
