@@ -223,78 +223,42 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
     detected_language = language or "auto"
     raw = []
     
-    # Primary: RunPod Serverless (requests.post bypass for timestamp_granularities)
-    runpod_api_key = os.getenv("RUNPOD_API_KEY")
-    runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+    raw_url = os.getenv("RAW_RUNPOD_URL")
     runpod_success = False
     
-    if runpod_api_key and runpod_endpoint:
-        log.info("Trying RunPod as primary transcription engine...")
+    if raw_url:
+        log.info("Trying Raw RunPod as primary transcription engine...")
         import requests
-        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
-        headers = {
-            "Authorization": f"Bearer {runpod_api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        import base64
-        runpod_mp3 = str(local_audio_path) + ".runpod.mp3"
-        subprocess.run(["ffmpeg", "-y", "-i", local_audio_path, "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
-        with open(runpod_mp3, "rb") as f:
-            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-            
-        payload = {
-            "input": {
-                "audio_base64": audio_b64,
-                "model": "whisper-large-v3",
-                "response_format": "verbose_json",
-                "temperature": 0
-            }
-        }
-        if language:
-            payload["input"]["language"] = language
-        if prompt:
-            payload["input"]["initial_prompt"] = prompt
-            payload["input"]["prompt"] = prompt
-            
-        url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
         try:
-            resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
-            resp.raise_for_status()
-            job_data = resp.json()
-            job_id = job_data.get("id")
-            if not job_id:
-                raise ValueError(f"RunPod returned no job ID: {job_data}")
+            with open(local_audio_path, "rb") as f:
+                files = {"file": f}
+                data = {
+                    "model": "whisper-large-v3",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
+                    "temperature": 0
+                }
+                if language:
+                    data["language"] = language
+                if prompt:
+                    data["prompt"] = prompt
                 
-            url_status = f"https://api.runpod.ai/v2/{runpod_endpoint}/status/{job_id}"
-            runpod_data = None
-            for _ in range(120):
-                time.sleep(5)
-                s_resp = requests.get(url_status, headers=headers, timeout=30)
-                s_resp.raise_for_status()
-                runpod_data = s_resp.json()
-                if runpod_data.get("status") == "COMPLETED":
-                    break
-                elif runpod_data.get("status") == "FAILED":
-                    raise ValueError(f"RunPod job failed: {runpod_data}")
-                    
-            if runpod_data.get("status") != "COMPLETED":
-                raise TimeoutError("RunPod timed out.")
-                
-            r_json = runpod_data.get("output", {})
+                resp = requests.post(raw_url, files=files, data=data, timeout=600)
+                resp.raise_for_status()
+                r_json = resp.json()
             
             detected_language = r_json.get("language", detected_language)
-            # Parse segments
             for s in (r_json.get("segments", []) or []):
                 st = s.get("start", 0.0) or 0.0
                 en = s.get("end", 0.0) or 0.0
                 txt = (s.get("text", "") or "").strip()
                 lp = s.get("avg_logprob", 0.0) or 0.0
                 raw.append({"start": st, "end": en, "text": txt, "avg_logprob": lp})
+                
             runpod_success = True
-            log.info("RunPod transcription successful.")
+            log.info("RunPod Raw transcription successful.")
         except Exception as e:
-            log.error(f"RunPod failed: {e}. Falling back to Groq...")
+            log.error(f"RunPod Raw failed: {e}. Falling back to Groq...")
             runpod_success = False
 
     # Fallback: Groq SDK
@@ -580,64 +544,29 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                     response_text = ""
                     
                     runpod_api_key = os.getenv("RUNPOD_API_KEY")
-                    runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+                    raw_url = os.getenv("RAW_RUNPOD_URL")
                     runpod_success = False
                     
-                    if runpod_api_key and runpod_endpoint:
-                        log.info("Trying RunPod for Mono as primary...")
+                    if raw_url:
+                        log.info("Trying Raw RunPod for Mono as primary...")
                         import requests
-                        url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
-                        headers = {
-                            "Authorization": f"Bearer {runpod_api_key}",
-                            "Content-Type": "application/json"
-                        }
-                        
-                        import base64
-                        runpod_mp3 = str(local_audio_path) + ".runpod.mp3"
-                        subprocess.run(["ffmpeg", "-y", "-i", local_audio_path, "-ar", "16000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
-                        with open(runpod_mp3, "rb") as f:
-                            audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-                            
-                        payload = {
-                            "input": {
-                                "audio_base64": audio_b64,
-                                "model": "whisper-large-v3",
-                                "response_format": "verbose_json",
-                                "temperature": 0
-                            }
-                        }
-                        if language:
-                            payload["input"]["language"] = language
-                        if prompt:
-                            payload["input"]["initial_prompt"] = prompt
-                            payload["input"]["prompt"] = prompt
-                            
                         try:
-                            url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
-                            print(f"Sending base64 JSON payload to RunPod run endpoint {runpod_endpoint}...")
-                            resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
-                            resp.raise_for_status()
-                            job_data = resp.json()
-                            job_id = job_data.get("id")
-                            if not job_id:
-                                raise ValueError(f"RunPod returned no job ID: {job_data}")
+                            with open(local_audio_path, "rb") as f:
+                                files = {"file": f}
+                                data = {
+                                    "model": "whisper-large-v3",
+                                    "response_format": "verbose_json",
+                                    "timestamp_granularities[]": "segment",
+                                    "temperature": 0
+                                }
+                                if language:
+                                    data["language"] = language
+                                if prompt:
+                                    data["prompt"] = prompt
                                 
-                            url_status = f"https://api.runpod.ai/v2/{runpod_endpoint}/status/{job_id}"
-                            runpod_data = None
-                            for _ in range(120):
-                                time.sleep(5)
-                                s_resp = requests.get(url_status, headers=headers, timeout=30)
-                                s_resp.raise_for_status()
-                                runpod_data = s_resp.json()
-                                if runpod_data.get("status") == "COMPLETED":
-                                    break
-                                elif runpod_data.get("status") == "FAILED":
-                                    raise ValueError(f"RunPod job failed: {runpod_data}")
-                                    
-                            if runpod_data.get("status") != "COMPLETED":
-                                raise TimeoutError("RunPod timed out.")
-                                
-                            r_json = runpod_data.get("output", {})
+                                resp = requests.post(raw_url, files=files, data=data, timeout=600)
+                                resp.raise_for_status()
+                                r_json = resp.json()
                             
                             detected_language = r_json.get("language", detected_language)
                             response_text = r_json.get("text", "")

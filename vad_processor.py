@@ -725,64 +725,28 @@ def process_vad(
             detected_lang = language or "auto"
             raw_segs = []
             
-            runpod_api_key = os.getenv("RUNPOD_API_KEY")
-            runpod_endpoint = os.getenv("RUNPOD_WHISPER_ENDPOINT")
+            raw_url = os.getenv("RAW_RUNPOD_URL")
             runpod_success = False
             
-            if runpod_api_key and runpod_endpoint:
+            if raw_url:
                 try:
-                    # Bypass the openai Python SDK entirely to avoid the 400 Bad Request
-                    url = f"https://api.runpod.ai/v2/{runpod_endpoint}/runsync"
-                    headers = {
-                        "Authorization": f"Bearer {runpod_api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    
-                    import base64
-                    runpod_mp3 = str(local_path) + ".runpod.mp3"
-                    subprocess.run(["ffmpeg", "-y", "-i", local_path, "-ar", "16000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k", runpod_mp3], check=True, capture_output=True)
-                    with open(runpod_mp3, "rb") as f:
-                        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
-                        
-                    payload = {
-                        "input": {
-                            "audio_base64": audio_b64,
+                    import requests
+                    with open(local_path, "rb") as f:
+                        files = {"file": f}
+                        data = {
                             "model": "whisper-large-v3",
                             "response_format": "verbose_json",
+                            "timestamp_granularities[]": "segment",
                             "temperature": 0
                         }
-                    }
-                    if language:
-                        payload["input"]["language"] = language
-                    if prompt:
-                        payload["input"]["initial_prompt"] = prompt
-                        payload["input"]["prompt"] = prompt
-
-                    url_run = f"https://api.runpod.ai/v2/{runpod_endpoint}/run"
-                    print(f"Sending base64 JSON payload to RunPod run endpoint {runpod_endpoint}...")
-                    resp = requests.post(url_run, headers=headers, json=payload, timeout=30)
-                    resp.raise_for_status()
-                    job_data = resp.json()
-                    job_id = job_data.get("id")
-                    if not job_id:
-                        raise ValueError(f"RunPod returned no job ID: {job_data}")
+                        if language:
+                            data["language"] = language
+                        if prompt:
+                            data["prompt"] = prompt
                         
-                    url_status = f"https://api.runpod.ai/v2/{runpod_endpoint}/status/{job_id}"
-                    runpod_data = None
-                    for _ in range(120):
-                        time.sleep(5)
-                        s_resp = requests.get(url_status, headers=headers, timeout=30)
-                        s_resp.raise_for_status()
-                        runpod_data = s_resp.json()
-                        if runpod_data.get("status") == "COMPLETED":
-                            break
-                        elif runpod_data.get("status") == "FAILED":
-                            raise ValueError(f"RunPod job failed: {runpod_data}")
-                            
-                    if runpod_data.get("status") != "COMPLETED":
-                        raise TimeoutError("RunPod timed out.")
-                        
-                    result_json = runpod_data.get("output", {})
+                        resp = requests.post(raw_url, files=files, data=data, timeout=600)
+                        resp.raise_for_status()
+                        result_json = resp.json()
                     
                     detected_lang = result_json.get("language", detected_lang)
                     
