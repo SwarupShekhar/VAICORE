@@ -334,7 +334,10 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
 
         log.warning(f"Repetition loop on {Path(path).name} "
                     f"(distinct-word ratio {_loop_score(segs):.2f}); re-transcribing chunked.")
-        lock_lang = lang or dlang
+        # Don't lock to dlang. If the whole-file failed and looped, its detected
+        # language (e.g. 'en' from a 'Hello') is likely poisoned and will force
+        # all chunks to incorrectly translate into English.
+        lock_lang = lang
         try:
             dur = float(_sp.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
