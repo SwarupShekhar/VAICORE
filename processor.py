@@ -643,8 +643,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                                 current_speaker = dominant_speaker
                         else:
                             # Gap-based fallback: assume mono is a single speaker if Pyannote is disabled
-                            # if start - last_end_time > 0.5:
-                            #     current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+                            pass
 
                         if filter_segment(text, avg_logprob):
                             if start == 0 and end == 0 and temp_segments:
@@ -715,8 +714,7 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                             current_speaker = dominant_speaker
                     else:
                         # Gap-based fallback: assume mono is a single speaker if Pyannote is disabled
-                        # if start - last_end_time > 0.5:
-                        #     current_speaker = "Speaker B" if current_speaker == "Speaker A" else "Speaker A"
+                        pass
 
                     if filter_segment(text, avg_logprob):
                         if start == 0 and end == 0 and temp_segments:
