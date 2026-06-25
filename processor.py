@@ -199,111 +199,115 @@ def get_call_intelligence(transcript: str) -> Dict[str, Any]:
         }
 
 def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client_code, language=None):
-    """Dual-channel call: transcribe the MIXED audio once, diarize by channel energy.
+    """Stereo call: transcribe EACH channel independently (channel == speaker).
 
-    Transcribing each channel in isolation hallucinates badly: an isolated
-    channel is silent while the other party talks, and Whisper invents text +
-    guesses a random language (Tamil/Telugu on a Hindi call) on silence.
+    Telephony stereo carries the agent on one channel, the customer on the
+    other. Transcribing the MIXED downmix causes cross-talk -> on noisy 8kHz
+    Whisper collapses into catastrophic repetition ("alo alo alo ..."). Verified
+    on real CLIENT002/Bajaj audio: mixed downmix = pure garbage; per-channel =
+    clean, coherent conversation.
 
-    Instead:
-      1. Transcribe the full MIXED audio once -> full signal, stable language
-         auto-detect, no silence hallucination, best accuracy.
-      2. Split L/R only to MEASURE energy. For each transcribed segment, the
-         louder channel over that window is the speaker. Deterministic, no
-         pyannote, no guessing.
-    Returns (temp_segments, detected_language).
+    So we transcribe L and R in isolation. This also gives perfect diarization
+    for free (channel identity == speaker identity) — no energy guessing, no
+    pyannote. vad_filter drops the silent stretches (while the other party
+    talks) that would otherwise hallucinate.
+
+    NOTE: residual same-token repetition loops are driven by the SERVER's baked
+    condition_on_previous_text=True (NOT settable over HTTP — the endpoint
+    silently drops the field). Fix fully by redeploying faster-whisper-server
+    with condition_on_previous_text=False and no_repeat_ngram_size=3. Client-
+    side we (a) drop the Marathi prompt bias — it corrupts non-Marathi calls,
+    and Bajaj runs many languages; auto-detect per channel instead — and
+    (b) collapse consecutive identical hallucinated segments.
+
+    Returns (temp_segments, detected_language). temp_segments: list of
+    {start, end, text, speaker, avg_logprob} sorted by start.
     """
     import subprocess as _sp
-    import wave as _wave
-    import array as _array
-    import math as _math
 
-    # 1. Transcribe the full mixed audio once.
-    prompt = CLIENT_PROMPT_CONFIG.get(client_code, CLIENT_PROMPT_CONFIG['DEFAULT'])
-    detected_language = language or "auto"
-    raw = []
-    
     raw_url = os.getenv("RAW_RUNPOD_URL")
-    runpod_success = False
-    
-    if raw_url:
-        log.info("Trying Raw RunPod as primary transcription engine...")
-        import requests
-        try:
-            with open(local_audio_path, "rb") as f:
-                files = {"file": f}
-                # This server (faster-whisper-server) /v1/audio/transcriptions
-                # accepts ONLY: file, model, language, prompt, response_format,
-                # temperature, timestamp_granularities, stream, hotwords,
-                # vad_filter. Any other field (condition_on_previous_text, task,
-                # vad_parameters) is SILENTLY DROPPED by FastAPI. The repetition
-                # loop is driven by the server's baked condition_on_previous_text=
-                # True -> fix that via server redeploy (env/config). Client-side
-                # we cut seeding by passing domain terms as `hotwords` (gentle
-                # bias) instead of `prompt` (=initial_prompt, a strong repetition
-                # seed on noisy 8kHz). temperature is a single float here, not a
-                # fallback array — sending a list 422s the request.
-                data = {
-                    "model": "Systran/faster-whisper-large-v3",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities": "segment",
-                    "temperature": "0.0",
-                    "vad_filter": "true",
-                }
-                if language:
-                    data["language"] = language
-                if prompt:
-                    data["hotwords"] = prompt
-                
-                resp = requests.post(raw_url, files=files, data=data, timeout=600)
-                resp.raise_for_status()
-                r_json = resp.json()
-            
-            detected_language = r_json.get("language", detected_language)
-            for s in (r_json.get("segments", []) or []):
-                st = s.get("start", 0.0) or 0.0
-                en = s.get("end", 0.0) or 0.0
-                txt = (s.get("text", "") or "").strip()
-                lp = s.get("avg_logprob", 0.0) or 0.0
-                raw.append({"start": st, "end": en, "text": txt, "avg_logprob": lp})
-                
-            runpod_success = True
-            log.info("RunPod Raw transcription successful.")
-        except Exception as e:
-            log.error(f"RunPod Raw failed: {e}. Falling back to Groq...")
-            runpod_success = False
 
-    # Fallback: Groq SDK
-    if not runpod_success:
-        log.info("Using Groq API fallback...")
+    def _collapse_repeats(text):
+        """Collapse adjacent identical comma-delimited tokens — loop spam like
+        'வணக்கம், வணக்கம், வணக்கம், ...' becomes 'வணக்கம்'. Readability only;
+        does NOT recover the words the server looped over instead of decoding.
+        Real fix = server condition_on_previous_text=False + no_repeat_ngram_size."""
+        toks = [t.strip() for t in text.split(',')]
+        out = []
+        for t in toks:
+            if not t or (out and out[-1] == t):
+                continue
+            out.append(t)
+        return ', '.join(out)
+
+    def _transcribe_file(path, lang):
+        """Transcribe one mono channel. RunPod primary, Groq fallback.
+        Returns (segments, detected_lang)."""
+        segs = []
+        dlang = lang or "auto"
+        if raw_url:
+            try:
+                import requests
+                # Endpoint accepts ONLY: file, model, language, prompt,
+                # response_format, temperature, timestamp_granularities, stream,
+                # hotwords, vad_filter. No prompt/hotwords on purpose — domain
+                # bias in the wrong language seeds hallucination loops.
+                with open(path, "rb") as f:
+                    data = {
+                        "model": "Systran/faster-whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities": "segment",
+                        "temperature": "0.0",
+                        "vad_filter": "true",
+                    }
+                    if lang:
+                        data["language"] = lang
+                    resp = requests.post(raw_url, files={"file": f}, data=data, timeout=600)
+                    resp.raise_for_status()
+                    rj = resp.json()
+                dlang = rj.get("language", dlang)
+                for s in (rj.get("segments", []) or []):
+                    txt = (s.get("text", "") or "").strip()
+                    if txt:
+                        segs.append({
+                            "start": s.get("start", 0.0) or 0.0,
+                            "end": s.get("end", 0.0) or 0.0,
+                            "text": txt,
+                            "avg_logprob": s.get("avg_logprob", 0.0) or 0.0,
+                        })
+                return segs, dlang
+            except Exception as e:
+                log.error(f"RunPod channel transcription failed: {e}. Falling back to Groq...")
+                segs = []
+
+        # Fallback: Groq SDK
         _kw = dict(
             model="whisper-large-v3",
             response_format="verbose_json",
             timestamp_granularities=["segment"],
             temperature=0,  # anti-hallucination
-            prompt=prompt,
         )
-        if language:
-            _kw["language"] = language
-        
-        with open(local_audio_path, "rb") as f:
+        if lang:
+            _kw["language"] = lang
+        with open(path, "rb") as f:
             r = groq_client.audio.transcriptions.create(file=f, **_kw)
-        
-        detected_language = getattr(r, 'language', None) or detected_language
-        raw_segs = getattr(r, 'segments', []) or []
-        for s in raw_segs:
+        dlang = getattr(r, "language", None) or dlang
+        for s in (getattr(r, "segments", []) or []):
             isd = isinstance(s, dict)
-            st = (s.get("start") if isd else getattr(s, "start", 0.0)) or 0.0
-            en = (s.get("end") if isd else getattr(s, "end", 0.0)) or 0.0
-            txt = (s.get("text") if isd else getattr(s, "text", "")).strip()
-            lp = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
-            raw.append({"start": st, "end": en, "text": txt, "avg_logprob": lp})
+            txt = ((s.get("text") if isd else getattr(s, "text", "")) or "").strip()
+            if not txt:
+                continue
+            segs.append({
+                "start": (s.get("start") if isd else getattr(s, "start", 0.0)) or 0.0,
+                "end": (s.get("end") if isd else getattr(s, "end", 0.0)) or 0.0,
+                "text": txt,
+                "avg_logprob": (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0,
+            })
+        return segs, dlang
 
-    log.info(f"Mixed transcription: {len(raw)} segments. Lang: {detected_language}")
-
-    # 2. Split channels (energy measurement only — never transcribed).
+    # 1. Split stereo into two mono 16kHz channels.
     ch_dir = Path(base_temp_dir) / "ch"
-    ch_dir.mkdir(exist_ok=True)
+    ch_dir.mkdir(parents=True, exist_ok=True)
     left = str(ch_dir / "L.wav")
     right = str(ch_dir / "R.wav")
     _sp.run([
@@ -313,60 +317,56 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
         '-map', '[R]', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', right,
     ], check=True, capture_output=True)
 
-    def _load(path):
-        with _wave.open(path, 'rb') as w:
-            sr = w.getframerate()
-            data = w.readframes(w.getnframes())
-        return _array.array('h', data), sr
+    # 2. Transcribe each channel independently. Channel == speaker.
+    log.info("Transcribing channel L (Speaker A)...")
+    l_segs, l_lang = _transcribe_file(left, language)
+    log.info("Transcribing channel R (Speaker B)...")
+    r_segs, r_lang = _transcribe_file(right, language)
 
-    Ld, sr = _load(left)
-    Rd, _ = _load(right)
     for _p in (left, right):
         try:
             os.remove(_p)
         except Exception:
             pass
 
-    def _rms(arr, t0, t1):
-        s0 = max(0, int(t0 * sr))
-        s1 = min(len(arr), int(t1 * sr))
-        if s1 <= s0:
-            return 0.0
-        step = max(1, (s1 - s0) // 4000)  # subsample long windows for speed
-        acc = 0.0
-        cnt = 0
-        for i in range(s0, s1, step):
-            v = arr[i]
-            acc += v * v
-            cnt += 1
-        return _math.sqrt(acc / cnt) if cnt else 0.0
+    # Language: trust the channel with more transcribed text (a near-silent
+    # channel can mis-detect). Explicit arg always wins.
+    if language:
+        detected_language = language
+    else:
+        l_chars = sum(len(s["text"]) for s in l_segs)
+        r_chars = sum(len(s["text"]) for s in r_segs)
+        detected_language = l_lang if l_chars >= r_chars else r_lang
 
-    # 3. Assign speaker per segment by louder channel over its time window.
+    # 3. Tag speaker by channel and combine.
     merged = []
-    for seg in raw:
-        isd = isinstance(seg, dict)
-        st = (seg.get('start') if isd else getattr(seg, 'start', 0)) or 0
-        en = (seg.get('end') if isd else getattr(seg, 'end', 0)) or 0
-        txt = ((seg.get('text') if isd else getattr(seg, 'text', '')) or '').strip()
-        if not txt:
-            continue
-        lp = (seg.get('avg_logprob') if isd else getattr(seg, 'avg_logprob', 0.0)) or 0.0
-        el = _rms(Ld, st, en)
-        er = _rms(Rd, st, en)
-        merged.append({
-            "start": st,
-            "end": en,
-            "text": txt,
-            "speaker": "Speaker A" if el >= er else "Speaker B",
-            "avg_logprob": lp,
-        })
-
+    for s in l_segs:
+        s["speaker"] = "Speaker A"
+        merged.append(s)
+    for s in r_segs:
+        s["speaker"] = "Speaker B"
+        merged.append(s)
     merged.sort(key=lambda s: s["start"])
 
-    # 4. Merge consecutive same-speaker segments when there's no real pause and
-    # the bubble isn't too long (readable bubbles, zero data loss).
-    temp_segments = []
+    # 4. Collapse intra-segment loop spam, then drop consecutive identical
+    # segments per speaker — both are hallucination artifacts of the server's
+    # condition_on_previous_text=True.
     for s in merged:
+        s["text"] = _collapse_repeats(s["text"])
+    deduped = []
+    for s in merged:
+        if not s["text"]:
+            continue
+        if (deduped and deduped[-1]["speaker"] == s["speaker"]
+                and deduped[-1]["text"] == s["text"]):
+            deduped[-1]["end"] = s["end"]
+            continue
+        deduped.append(s)
+
+    # 5. Merge consecutive same-speaker segments with no real pause into
+    # readable bubbles (zero data loss).
+    temp_segments = []
+    for s in deduped:
         if temp_segments:
             prev = temp_segments[-1]
             if (prev["speaker"] == s["speaker"]
@@ -378,7 +378,8 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                 continue
         temp_segments.append(dict(s))
 
-    log.info(f"Channel-energy diarization: {len(merged)} segs -> {len(temp_segments)} bubbles.")
+    log.info(f"Per-channel transcription: L={len(l_segs)} R={len(r_segs)} "
+             f"-> {len(temp_segments)} bubbles. Lang: {detected_language}")
     return temp_segments, detected_language
 
 
