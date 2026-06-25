@@ -321,9 +321,10 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
         """Transcribe one channel. Try whole-file first (best quality). If the
         server's condition_on_previous_text=True drove it into a repetition loop
         (low distinct-word ratio), re-transcribe in independent ~25s chunks —
-        each request resets context, breaking the loop. Language is locked to the
-        whole-file detection so noisy chunks don't mis-detect (Korean/Turkish/etc).
-        INTERIM hack until the server is redeployed with the loop fix."""
+        each request resets context, breaking the loop. Chunk language is decided
+        by majority vote across chunks (not whole-file detection, which a 'Hello'
+        opener poisons to 'en'), and outlier chunks are re-transcribed pinned to
+        the winner. INTERIM hack until the server is redeployed with the loop fix."""
         import math as _math
         LOOP_THRESHOLD = 0.25
         CHUNK = 25.0
@@ -334,10 +335,6 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
 
         log.warning(f"Repetition loop on {Path(path).name} "
                     f"(distinct-word ratio {_loop_score(segs):.2f}); re-transcribing chunked.")
-        # Don't lock to dlang. If the whole-file failed and looped, its detected
-        # language (e.g. 'en' from a 'Hello') is likely poisoned and will force
-        # all chunks to incorrectly translate into English.
-        lock_lang = lang
         try:
             dur = float(_sp.run(
                 ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -346,7 +343,15 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
         except Exception:
             return segs, dlang
 
-        chunk_segs = []
+        # Transcribe each chunk auto-detecting its own language (when no upload
+        # language is pinned), then MAJORITY-VOTE the language weighted by text
+        # length and re-transcribe only the OUTLIER chunks pinned to the winner.
+        # This beats both failure modes: "lock to whole-file" poisons every chunk
+        # with the 'en' a "Hello" opener triggers; "every chunk free" lets noisy
+        # chunks drift to Korean/Turkish/etc. The vote anchors to the language the
+        # call is actually in; outlier re-transcription rescues the drifters.
+        chunks = []
+        votes = {}
         for i in range(_math.ceil(dur / CHUNK)):
             st = i * CHUNK
             cpath = f"{path}.c{i}.wav"
@@ -355,21 +360,43 @@ def transcribe_dual_channel(groq_client, local_audio_path, base_temp_dir, client
                          "-i", path, "-ar", "16000", "-ac", "1",
                          "-c:a", "pcm_s16le", cpath],
                         check=True, capture_output=True)
-                cs, _ = _one_request(cpath, lock_lang)
-                for x in cs:
-                    x["start"] += st
-                    x["end"] += st
-                    chunk_segs.append(x)
+                cs, clang = _one_request(cpath, lang)  # lang None -> per-chunk auto
+                chunks.append({"path": cpath, "start": st, "segs": cs, "lang": clang})
+                if clang:
+                    votes[clang] = votes.get(clang, 0) + sum(len(x["text"]) for x in cs)
             except Exception as e:
                 log.error(f"Chunk {i} failed: {e}")
-            finally:
-                try:
-                    os.remove(cpath)
-                except Exception:
-                    pass
+                chunks.append({"path": cpath, "start": st, "segs": [], "lang": None})
 
-        # Keep whichever recovered more distinct content.
-        return (chunk_segs, dlang) if _loop_score(chunk_segs) > _loop_score(segs) else (segs, dlang)
+        winner = lang or (max(votes, key=votes.get) if votes else dlang)
+
+        # Re-transcribe chunks whose detected language disagrees with the winner.
+        if not lang and winner:
+            for c in chunks:
+                if c["segs"] and c["lang"] != winner:
+                    log.info(f"Chunk @{c['start']:.0f}s detected '{c['lang']}' != "
+                             f"'{winner}'; re-transcribing pinned to '{winner}'.")
+                    try:
+                        cs, _ = _one_request(c["path"], winner)
+                        c["segs"] = cs
+                    except Exception as e:
+                        log.error(f"Re-transcribe chunk @{c['start']:.0f}s failed: {e}")
+
+        chunk_segs = []
+        for c in chunks:
+            for x in c["segs"]:
+                x["start"] += c["start"]
+                x["end"] += c["start"]
+                chunk_segs.append(x)
+            try:
+                os.remove(c["path"])
+            except Exception:
+                pass
+
+        # Keep whichever recovered more distinct content; report the voted language.
+        if _loop_score(chunk_segs) > _loop_score(segs):
+            return chunk_segs, winner
+        return segs, dlang
 
     # 1. Split stereo into two mono 16kHz channels.
     ch_dir = Path(base_temp_dir) / "ch"
