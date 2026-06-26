@@ -115,7 +115,7 @@ def export_and_deliver(
                     matched_skeletons = [
                         t for t in tasks_list
                         if t.get("data", {}).get("client_code") == client_code
-                        and t.get("data", {}).get("filename") == original_filename
+                        and original_filename in t.get("data", {}).get("filename", "")
                     ]
 
                     if matched_skeletons:
@@ -1246,7 +1246,7 @@ def export_vad(
             skeletons = [
                 t for t in all_tasks
                 if t.get("data", {}).get("client_code") == client_code
-                and t.get("data", {}).get("filename") == original_filename
+                and original_filename in t.get("data", {}).get("filename", "")
             ]
             for skel in skeletons:
                 tr = requests.get(
@@ -1472,7 +1472,7 @@ def check_annotation_status(
                 tasks_for_file = [
                     t for t in all_tasks
                     if t.get("data", {}).get("client_code") == client_code
-                    and (original_filename is None or t.get("data", {}).get("filename") == original_filename)
+                    and (original_filename is None or original_filename in t.get("data", {}).get("filename", ""))
                 ]
                 if tasks_for_file:
                     filtered_tasks = tasks_for_file
