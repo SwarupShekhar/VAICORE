@@ -1248,7 +1248,6 @@ def export_vad(
                 t for t in all_tasks
                 if t.get("data", {}).get("client_code") == client_code
                 and t.get("data", {}).get("filename") == original_filename
-                and (t.get("total_annotations", 0) > 0 or t.get("annotations"))
             ]
             for skel in skeletons:
                 tr = requests.get(
