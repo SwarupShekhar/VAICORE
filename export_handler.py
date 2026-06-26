@@ -1477,7 +1477,7 @@ def check_annotation_status(
                 pass
 
         total = len(filtered_tasks)
-        completed = sum(1 for t in filtered_tasks if t.get("total_annotations", 0) > 0)
+        completed = sum(1 for t in filtered_tasks if t.get("total_annotations", 0) > 0 or t.get("is_labeled", False))
 
         return {
             "client_code": client_code,
