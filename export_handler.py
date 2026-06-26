@@ -1275,8 +1275,6 @@ def export_vad(
             for annotation in task.get("annotations", []):
                 if annotation.get("was_cancelled"):
                     continue
-                if not annotation.get("is_accepted"):
-                    continue
 
                 speaker    = None
                 transcript = None
