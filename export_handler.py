@@ -162,16 +162,16 @@ def export_and_deliver(
             task_lang = task_data.get("language", "Unknown")
             languages.add(task_lang)
             
-            for annotation in task.get("annotations", []):
+            items = task.get("annotations", [])
+            if not items:
+                items = task.get("drafts", [])
+            if not items:
+                items = task.get("predictions", [])
+
+            for annotation in items:
                 if annotation.get("was_cancelled"):
                     continue
                 
-                # Only export annotations explicitly accepted by a reviewer.
-                # If no reviewer workflow is configured in Label Studio, all annotations
-                # will be skipped here. Set up a review step in LS or remove this gate.
-                if not annotation.get("is_accepted") and not is_clickstream:
-                    print(f"[export] Skipping annotation id={annotation.get('id')} for {original_filename} — not accepted (is_accepted=False). Configure a reviewer workflow in Label Studio.")
-                    continue
                 
                 result = annotation.get("result", [])
 
