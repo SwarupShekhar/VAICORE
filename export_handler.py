@@ -1272,14 +1272,21 @@ def export_vad(
         for task in matched_tasks:
             task_data = task.get("data", {})
 
-            for annotation in task.get("annotations", []):
-                if annotation.get("was_cancelled"):
+            # Fallback chain: Annotations -> Drafts -> Predictions
+            items = task.get("annotations", [])
+            if not items:
+                items = task.get("drafts", [])
+            if not items:
+                items = task.get("predictions", [])
+
+            for item in items:
+                if item.get("was_cancelled"):
                     continue
 
                 speaker    = None
                 transcript = None
 
-                for r_item in annotation.get("result", []):
+                for r_item in item.get("result", []):
                     fn  = r_item.get("from_name", "")
                     val = r_item.get("value", {})
                     if fn == "speaker":
