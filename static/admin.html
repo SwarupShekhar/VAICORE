@@ -825,7 +825,11 @@
                 }
                 scheduleRefresh();
             } else {
-                alert('Packaging failed: ' + (data.message || data.error || 'Unknown error'));
+                let errorDetails = data.message || data.error || 'Unknown error';
+                if (data.errors && data.errors.length > 0) {
+                    errorDetails += '\\n\\nDetails:\\n' + data.errors.join('\\n');
+                }
+                alert('Packaging failed: ' + errorDetails);
                 pkgBtn.disabled = false;
                 pkgBtn.innerHTML = '📦 Package &amp; Deliver Selected';
             }
