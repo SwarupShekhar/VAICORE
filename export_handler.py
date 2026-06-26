@@ -116,7 +116,6 @@ def export_and_deliver(
                         t for t in tasks_list
                         if t.get("data", {}).get("client_code") == client_code
                         and t.get("data", {}).get("filename") == original_filename
-                        and (t.get("total_annotations", 0) > 0 or len(t.get("annotations", [])) > 0)
                     ]
 
                     if matched_skeletons:
