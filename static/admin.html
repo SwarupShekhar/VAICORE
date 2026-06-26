@@ -703,7 +703,7 @@
                     const isReady = item.completion_percentage === 100 || item.status === 'Review Finished' || item.status === 'Completed';
 
                     let checkboxHtml = '';
-                    if (isReady && !isDelivered) {
+                    if (!isDelivered) {
                         tr.className = 'row-selectable';
                         const key = item.client_code + "___" + item.filename;
                         const isChecked = window.selectedDeliverFiles && window.selectedDeliverFiles[key] ? 'checked' : '';
