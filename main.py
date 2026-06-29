@@ -94,10 +94,22 @@ from ocr_fallback import local_ocr_scan
 from clickstream_parser import parse_clickstream_logs
 from export_handler import check_annotation_status, export_and_deliver
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from auto_purge import run_purge
 
 load_dotenv()
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = AsyncIOScheduler()
+    # Run the purge job every day at 2:00 AM
+    scheduler.add_job(run_purge, 'cron', hour=2, minute=0)
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -32,6 +32,7 @@ class JobStatus(enum.Enum):
     TRANSCRIBING = "Transcribing"
     IN_REVIEW = "In Review"
     DELIVERED = "Delivered"
+    PURGED = "Purged"
     ERROR = "Error"
     FAILED = "Failed"
 

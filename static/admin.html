@@ -455,6 +455,7 @@
     function _pipeStatusClass(status) {
         const s = (status || '').toLowerCase();
         if (s === 'delivered') return 'pipe-status pipe-status-delivered';
+        if (s === 'purged') return 'pipe-status pipe-status-purged';
         if (s === 'in review' || s === 'review finished' || s === 'completed') return 'pipe-status pipe-status-review';
         if (s === 'processing' || s === 'transcribing' || s === 'uploading' || s === 'extracting') return 'pipe-status pipe-status-processing';
         if (s === 'failed' || s === 'error') return 'pipe-status pipe-status-error';
@@ -473,7 +474,7 @@
 
         items.forEach(item => {
             const status = item.status || 'Unknown';
-            if (status === 'Delivered') deliveredCount++;
+            if (status === 'Delivered' || status === 'Purged') deliveredCount++;
             else if (['In Review', 'Review Finished', 'Completed', 'Processing'].includes(status)) inReviewCount++;
             else if (status.startsWith('Failed') || status === 'Error' || status === 'Unknown') failedCount++;
 
@@ -579,7 +580,7 @@
                 batchHeader.className = 'batch-acc-header';
                 
                 const totalFiles = batch.files.length;
-                const completedFiles = batch.files.filter(f => ['In Review', 'Completed', 'Review Finished', 'Delivered'].includes(f.status)).length;
+                const completedFiles = batch.files.filter(f => ['In Review', 'Completed', 'Review Finished', 'Delivered', 'Purged'].includes(f.status)).length;
                 
                 batchHeader.innerHTML = `
                     <div style="display:flex; align-items:center; gap:10px; flex-grow:1;">
@@ -593,7 +594,7 @@
                     </div>
                     <div style="display:flex; align-items:center; gap:12px;" onclick="event.stopPropagation()">
                         <span class="${_pipeStatusClass(parent.status)}">${esc(parent.status)}</span>
-                        ${parent.status !== 'Delivered' ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch</button>` : ''}
+                        ${(parent.status !== 'Delivered' && parent.status !== 'Purged') ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch</button>` : ''}
                         <button class="btn-small btn-delete" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deleteBatch('${esc(batchId)}')">Delete</button>
                     </div>
                 `;
@@ -699,7 +700,7 @@
                 const singlesTbody = table.querySelector('tbody');
                 clientData.singles.forEach(item => {
                     const tr = document.createElement('tr');
-                    const isDelivered = item.status === 'Delivered';
+                    const isDelivered = item.status === 'Delivered' || item.status === 'Purged';
                     const isReady = item.completion_percentage === 100 || item.status === 'Review Finished' || item.status === 'Completed';
 
                     let checkboxHtml = '';
@@ -710,7 +711,7 @@
                         checkboxHtml = `<input type="checkbox" class="deliver-check" data-client="${esc(item.client_code)}" data-file="${esc(item.filename)}" ${isChecked} onchange="updateSelectionToolbar('${esc(clientCode)}')">`;
                     }
 
-                    const statusLabel = isDelivered ? '✓ Delivered' : esc(item.status);
+                    const statusLabel = item.status === 'Purged' ? '🗑️ Purged' : (isDelivered ? '✓ Delivered' : esc(item.status));
                     const statusBadge = `<span class="${_pipeStatusClass(item.status)}">${statusLabel}</span>`;
 
                     tr.innerHTML = `
