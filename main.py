@@ -903,6 +903,7 @@ async def package_delivery(
     if not client_code or not filenames:
         raise HTTPException(status_code=400, detail="client_code and filenames are required")
 
+    import hashlib
     zip_buffer = io.BytesIO()
     exported_files = []
     errors = []
@@ -932,7 +933,8 @@ async def package_delivery(
                     except Exception as dl_err:
                         errors.append(f"{filename}: download failed after export ({dl_err})")
                 else:
-                    errors.append(f"{filename}: {result.get('error', 'export failed')}")
+                    err_msg = result.get('error') or result.get('message') or 'export failed'
+                    errors.append(f"{filename}: {err_msg}")
 
             except Exception as e:
                 errors.append(f"{filename}: {str(e)}")
@@ -941,8 +943,9 @@ async def package_delivery(
         return {"success": False, "message": "No files could be exported.", "errors": errors}
 
     zip_buffer.seek(0)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    zip_blob_name = f"{client_code}/delivery_package_{timestamp}.zip"
+    # Generate a deterministic hash based on the filenames being packaged
+    file_hash = hashlib.md5("".join(sorted(exported_files)).encode()).hexdigest()[:8]
+    zip_blob_name = f"{client_code}/delivery_package_{file_hash}.zip"
 
     # Upload the final ZIP to client-delivery
     async with BlobServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING) as bsc:
