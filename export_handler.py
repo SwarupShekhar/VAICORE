@@ -1246,7 +1246,10 @@ def export_vad(
             skeletons = [
                 t for t in all_tasks
                 if t.get("data", {}).get("client_code") == client_code
-                and original_filename in t.get("data", {}).get("filename", "")
+                and (
+                    original_filename in t.get("data", {}).get("filename", "") or
+                    t.get("data", {}).get("filename", "") in original_filename
+                )
             ]
             for skel in skeletons:
                 tr = requests.get(
