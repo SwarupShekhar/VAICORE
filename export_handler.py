@@ -1354,18 +1354,43 @@ def export_vad(
             call_date = f"{m.group(1)}-{m.group(2)}-{m.group(3)} {m.group(4)}:{m.group(5)}:{m.group(6)}"
 
         flat_segments = []
+        try:
+            from vad_processor import expand_abbreviations, strip_punctuation, digits_to_hindi_words
+        except ImportError:
+            def strip_punctuation(text: str) -> str:
+                import re
+                return re.sub(r'[।॥\.,\?!;:\'"()\[\]{}\-–—/\\|@#%^&*+=<>~`]', '', text)
+            def expand_abbreviations(text: str) -> str:
+                return text
+            def digits_to_hindi_words(text: str) -> str:
+                return text
+
         for seg in segments:
+            # Enforce guideline: "If background speech or any speech not from the customer, do not transcribe it."
+            if seg["speaker"].lower() != "customer":
+                continue
+
             seg_id = seg["segment_id"]
             clip_name = seg.get("audio_clip", "")
             if not clip_name:
                 clip_name = f"{file_id}_segment_{seg_id}.wav"
+            
+            transcript = seg["transcript"]
+            # Enforce guideline: "No punctuation marks"
+            transcript = strip_punctuation(transcript)
+            # Enforce guideline: "Write abbreviations by spelling them out"
+            transcript = expand_abbreviations(transcript)
+            # Enforce guideline: "Do not write numbers like 1, 2, 3"
+            transcript = digits_to_hindi_words(transcript)
+            # Remove any extra spaces created
+            transcript = re.sub(r"\s+", " ", transcript).strip()
             
             flat_segments.append({
                 "Language Code": "hi",
                 "File Name": original_filename,
                 "Segment No.": seg_id,
                 "Segment File": f"audio_segments/{clip_name}",
-                "Transcription without labels": seg["transcript"],
+                "Transcription without labels": transcript,
                 "Call Date (Date and Time Stamp)": call_date,
                 "Output Shared (Date and Time Stamp)": output_shared
             })
@@ -1380,6 +1405,10 @@ def export_vad(
             audio_dir.mkdir(parents=True, exist_ok=True)
             
             for seg in segments:
+                # Guideline 24: only customer speech is delivered — skip agent clips
+                # so the ZIP's audio_segments/ matches the customer-only JSON.
+                if seg["speaker"].lower() != "customer":
+                    continue
                 clip_name = seg.get("audio_clip", "")
                 if not clip_name:
                     continue
@@ -1413,11 +1442,11 @@ def export_vad(
                     content_settings=ContentSettings(content_type="application/zip"),
                 )
 
-        print(f"[bajaj_vad] {len(segments)} segments exported to client-delivery/{delivery_blob_name}")
+        print(f"[bajaj_vad] {len(flat_segments)} customer segments exported to client-delivery/{delivery_blob_name}")
 
         return {
             "status":            "success",
-            "segments_exported": len(segments),
+            "segments_exported": len(flat_segments),
             "delivery_path":     f"client-delivery/{delivery_blob_name}",
             "xlsx_filename":     f"{zip_stem}.zip",
             "client_code":       client_code,

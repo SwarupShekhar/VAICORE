@@ -27,6 +27,7 @@ import shutil
 import time
 import subprocess
 import argparse
+import math
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -37,6 +38,8 @@ from azure.storage.blob import (
     BlobServiceClient, generate_blob_sas, BlobSasPermissions, ContentSettings,
 )
 import requests as _req
+
+from vad_segmenter import VadConfig, detect_speech_regions, map_words_to_regions
 
 load_dotenv()
 
@@ -655,6 +658,137 @@ def push_to_label_studio(
     return {"status": "success", "task_ids": task_ids, "failed": failed}
 
 
+# ── VAD-first transcription (word-level) ───────────────────────────────────────
+# Design 2026-06-30: Silero VAD defines segment boundaries; each channel is
+# transcribed once with word-level timestamps; words map into VAD windows by
+# midpoint. Silence has no window, so no word lands there → silence-free segments.
+# Replaces Whisper-default segmentation for the Bajaj / CLIENT002 flow.
+
+_VAD_CFG = VadConfig()
+
+
+def split_stereo_channels(local_path: str, tmp_dir: Path) -> Tuple[str, str]:
+    """Split stereo into two 16kHz mono channel WAVs (L, R). Channel == speaker."""
+    ch_dir = tmp_dir / "ch"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    left  = str(ch_dir / "L.wav")
+    right = str(ch_dir / "R.wav")
+    subprocess.run([
+        "ffmpeg", "-y", "-i", str(local_path),
+        "-filter_complex", "[0:a]channelsplit=channel_layout=stereo[L][R]",
+        "-map", "[L]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", left,
+        "-map", "[R]", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", right,
+    ], check=True, capture_output=True)
+    return left, right
+
+
+def _parse_words(segments: List[Dict], top_words: List[Dict]) -> List[Dict]:
+    """Normalise word objects from a verbose_json response into
+    {text, start, end, prob}. Words may live per-segment ('words') or top-level.
+    prob falls back to exp(segment avg_logprob), then 1.0."""
+    out: List[Dict] = []
+
+    def _emit(w: Dict, seg_lp: Optional[float]) -> None:
+        txt = (w.get("word") or w.get("text") or "").strip()
+        st, en = w.get("start"), w.get("end")
+        if not txt or st is None or en is None:
+            return
+        prob = w.get("probability", w.get("prob"))
+        if prob is None:
+            prob = math.exp(seg_lp) if seg_lp is not None else 1.0
+        out.append({"text": txt, "start": float(st), "end": float(en), "prob": float(prob)})
+
+    for s in (segments or []):
+        seg_lp = s.get("avg_logprob")
+        for w in (s.get("words") or []):
+            _emit(w, seg_lp)
+    if not out:
+        for w in (top_words or []):
+            _emit(w, None)
+    return out
+
+
+def transcribe_words(path: str, language: Optional[str]) -> Tuple[List[Dict], str]:
+    """Transcribe one channel WAV with WORD-level timestamps. RunPod primary
+    (timestamp_granularities=word), Groq fallback. Returns (words, detected_lang)
+    where words = [{text, start, end, prob}, …] on the file's own timeline.
+
+    NOTE: the RunPod faster-whisper-server's word-timestamp support must be
+    verified on the live endpoint — if it returns no words, this falls back to
+    Groq (sample phase). Vultr production must enable word_timestamps natively."""
+    detected = language or "auto"
+    raw_url = os.getenv("RAW_RUNPOD_URL")
+
+    if raw_url:
+        try:
+            with open(path, "rb") as f:
+                data = {
+                    "model": "Systran/faster-whisper-large-v3",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities": "word",
+                    "temperature": "0.0",
+                    "vad_filter": "true",
+                }
+                if language:
+                    data["language"] = language
+                resp = _req.post(raw_url, files={"file": f}, data=data, timeout=600)
+                resp.raise_for_status()
+                rj = resp.json()
+            words = _parse_words(rj.get("segments", []), rj.get("words", []))
+            if words:
+                return words, rj.get("language", detected)
+            print("RunPod returned no word timestamps — falling back to Groq for words.")
+        except Exception as e:
+            print(f"RunPod word transcription failed: {e}. Falling back to Groq...")
+
+    # Groq fallback — word granularity.
+    from openai import OpenAI as _OAI
+    groq = _OAI(api_key=os.getenv("GROQ_API_KEY"),
+                base_url="https://api.groq.com/openai/v1")
+    _kw = dict(model="whisper-large-v3", response_format="verbose_json",
+               timestamp_granularities=["word"], temperature=0)
+    if language:
+        _kw["language"] = language
+    with open(path, "rb") as f:
+        r = groq.audio.transcriptions.create(file=f, **_kw)
+    detected = getattr(r, "language", None) or detected
+
+    def _as_dict(o: Any) -> Dict:
+        return o if isinstance(o, dict) else {
+            "avg_logprob": getattr(o, "avg_logprob", None),
+            "words": getattr(o, "words", None),
+            "word": getattr(o, "word", None),
+            "text": getattr(o, "text", None),
+            "start": getattr(o, "start", None),
+            "end": getattr(o, "end", None),
+        }
+
+    segs = [_as_dict(s) for s in (getattr(r, "segments", []) or [])]
+    top  = [_as_dict(w) for w in (getattr(r, "words", []) or [])]
+    words = _parse_words(segs, top)
+    return words, detected
+
+
+def vad_first_channel(
+    channel_wav: str, speaker_label: str,
+    language: Optional[str], cfg: VadConfig = _VAD_CFG,
+) -> Tuple[List[Dict], str]:
+    """One channel → Silero VAD regions + word transcription + midpoint map.
+    Returns segments in the downstream schema
+    [{start, end, text, speaker, avg_logprob}] and the detected language."""
+    regions = detect_speech_regions(channel_wav, cfg)
+    words, lang = transcribe_words(channel_wav, language)
+    segs: List[Dict] = []
+    for m in map_words_to_regions(words, regions):
+        # map gives avg_prob (0–1); downstream <UNKNOWN> logic expects avg_logprob.
+        segs.append({
+            "start": m["start"], "end": m["end"], "text": m["text"],
+            "speaker": speaker_label,
+            "avg_logprob": math.log(max(m["avg_prob"], 1e-9)),
+        })
+    return segs, lang
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def process_vad(
@@ -706,104 +840,37 @@ def process_vad(
         stereo = int((pc.stdout.strip() or "1")) >= 2
         print(f"Audio: {'STEREO — channel=speaker' if stereo else 'MONO — gap-based diarization'}")
 
-        # ── Step 3: Transcribe ─────────────────────────────────────────────────
+        # ── Step 3: Transcribe — VAD-first, word-level (design 2026-06-30) ─────
+        # Silero VAD defines segment boundaries; each channel is transcribed once
+        # with word-level timestamps; words map into VAD windows by midpoint.
+        # Silence has no window → no word lands there → silence-free segments.
         if stereo:
-            from openai import OpenAI as _OAI
-            groq_key = os.getenv("GROQ_API_KEY")
-            transcribe_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-            # Reuse the dual-channel energy diarization from processor.py
-            from processor import transcribe_dual_channel, CLIENT_PROMPT_CONFIG
-            raw_segs, detected_lang = transcribe_dual_channel(
-                transcribe_client, local_path, str(tmp_dir), CLIENT_CODE, language or None,
-            )
-        else:
-            print("Mono path — single-channel customer audio")
-            import requests
-            from processor import CLIENT_PROMPT_CONFIG
-            
-            prompt = CLIENT_PROMPT_CONFIG.get(CLIENT_CODE, "")
-            detected_lang = language or "auto"
-            raw_segs = []
-            
-            raw_url = os.getenv("RAW_RUNPOD_URL")
-            runpod_success = False
-            
-            if raw_url:
+            print("Stereo — per-channel Silero VAD + word-level transcription")
+            left, right = split_stereo_channels(local_path, tmp_dir)
+            a_segs, a_lang = vad_first_channel(left,  "Speaker A", language or None)
+            b_segs, b_lang = vad_first_channel(right, "Speaker B", language or None)
+            for _p in (left, right):
                 try:
-                    import requests
-                    with open(local_path, "rb") as f:
-                        files = {"file": f}
-                        # Server honors only a fixed field set; "timestamp_
-                        # granularities[]" and "task" are silently dropped. Use the
-                        # correct key + vad_filter. No prompt — domain bias in the
-                        # wrong language seeds hallucination loops (auto-detect).
-                        data = {
-                            "model": "Systran/faster-whisper-large-v3",
-                            "response_format": "verbose_json",
-                            "timestamp_granularities": "segment",
-                            "temperature": "0.0",
-                            "vad_filter": "true",
-                        }
-                        if language:
-                            data["language"] = language
-                        
-                        resp = requests.post(raw_url, files=files, data=data, timeout=600)
-                        resp.raise_for_status()
-                        result_json = resp.json()
-                    
-                    detected_lang = result_json.get("language", detected_lang)
-                    
-                    for s in (result_json.get("segments", []) or []):
-                        txt = (s.get("text", "") or "").strip()
-                        if not txt:
-                            continue
-                        st  = s.get("start", 0.0) or 0.0
-                        en  = s.get("end", 0.0) or 0.0
-                        lp  = s.get("avg_logprob", 0.0) or 0.0
-                        
-                        raw_segs.append({"start": st, "end": en, "text": txt,
-                                          "speaker": "Customer", "avg_logprob": lp})
-                    runpod_success = True
-                    print("RunPod Mono transcription successful.")
-                except Exception as e:
-                    print(f"RunPod Mono failed: {e}. Falling back to Groq...")
-                    runpod_success = False
+                    os.remove(_p)
+                except Exception:
+                    pass
+            raw_segs = sorted(a_segs + b_segs, key=lambda s: s["start"])
+            if language:
+                detected_lang = language
+            else:
+                a_chars = sum(len(s["text"]) for s in a_segs)
+                b_chars = sum(len(s["text"]) for s in b_segs)
+                detected_lang = a_lang if a_chars >= b_chars else b_lang
+        else:
+            print("Mono — single-channel customer Silero VAD + word-level transcription")
+            raw_segs, detected_lang = vad_first_channel(
+                local_path, "Customer", language or None,
+            )
 
-            if not runpod_success:
-                print("Using Groq API fallback for Mono transcription...")
-                from openai import OpenAI as _OAI
-                groq_key = os.getenv("GROQ_API_KEY")
-                groq_client = _OAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
-                
-                _kw = dict(
-                    model="whisper-large-v3",
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"],
-                    temperature=0,
-                    prompt=prompt,
-                )
-                if language:
-                    _kw["language"] = language
-                    
-                with open(local_path, "rb") as f:
-                    r = groq_client.audio.transcriptions.create(file=f, **_kw)
-                    
-                detected_lang = getattr(r, 'language', None) or detected_lang
-                for s in (getattr(r, 'segments', []) or []):
-                    isd = isinstance(s, dict)
-                    txt = (s.get("text") if isd else getattr(s, "text", "")).strip()
-                    if not txt:
-                        continue
-                    st = (s.get("start") if isd else getattr(s, "start", 0.0)) or 0.0
-                    en = (s.get("end") if isd else getattr(s, "end", 0.0)) or 0.0
-                    lp = (s.get("avg_logprob") if isd else getattr(s, "avg_logprob", 0.0)) or 0.0
-                    raw_segs.append({"start": st, "end": en, "text": txt,
-                                     "speaker": "Customer", "avg_logprob": lp})
+        print(f"VAD-first segments: {len(raw_segs)} | Language: {detected_lang}")
 
-        print(f"Whisper segments: {len(raw_segs)} | Language: {detected_lang}")
-
-        audio_dur = get_audio_duration(local_path)
-        raw_segs  = apply_boundary_padding(raw_segs, audio_dur)
+        # VAD regions already carry speech_pad_ms padding and are split at ≥2s
+        # silence, so no extra boundary-padding or same-speaker merge is applied.
 
         # ── Step 4: Filter IVR ─────────────────────────────────────────────────
         before_ivr = len(raw_segs)
@@ -812,11 +879,7 @@ def process_vad(
         if ivr_dropped:
             print(f"IVR filter: dropped {ivr_dropped} segment(s)")
 
-        # ── Step 5: Merge same-speaker segments with gap ≤ 2s ─────────────────
-        raw_segs = merge_close_segments(raw_segs)
-        print(f"After merge: {len(raw_segs)} segment(s)")
-
-        # ── Step 5.5: Assign orig_id AFTER merging so turns are sequential ───────
+        # ── Step 5: Assign orig_id so turns are sequential ─────────────────────
         for i, s in enumerate(raw_segs, 1):
             s["orig_id"] = i
 
