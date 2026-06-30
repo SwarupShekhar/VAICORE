@@ -1395,6 +1395,18 @@ def export_vad(
                 "Output Shared (Date and Time Stamp)": output_shared
             })
 
+        # No customer segments survived the speaker filter — do not package or
+        # upload an empty delivery; surface it as an error instead of a false success.
+        if not flat_segments:
+            return {
+                "status": "error",
+                "message": (
+                    f"No customer segments to deliver for {original_filename}. "
+                    "All annotated segments were non-customer (Agent/Unknown) or empty."
+                ),
+                "client_code": client_code,
+            }
+
         # ── 4. Download clips and Zip ──────────────────────────────────────────
         svc = BlobServiceClient.from_connection_string(conn_str)
         processing_container = svc.get_container_client("processing")
@@ -1409,9 +1421,12 @@ def export_vad(
                 # so the ZIP's audio_segments/ matches the customer-only JSON.
                 if seg["speaker"].lower() != "customer":
                     continue
+                # Resolve clip_name identically to the JSON path so the ZIP's
+                # audio_segments/ matches the "Segment File" names exactly.
+                seg_id = seg["segment_id"]
                 clip_name = seg.get("audio_clip", "")
                 if not clip_name:
-                    continue
+                    clip_name = f"{file_id}_segment_{seg_id}.wav"
                 blob_name = f"{client_code}/vad_clips/{file_id}/{clip_name}"
                 try:
                     blob_client = processing_container.get_blob_client(blob_name)

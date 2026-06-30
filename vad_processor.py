@@ -429,7 +429,9 @@ def split_clips(
     segments: List[Dict],
     clip_dir: Path,
 ) -> None:
-    """Write per-segment 16kHz mono WAV clips. Clip filename already set in seg['audio_clip']."""
+    """Write per-segment 16kHz mono WAV clips. Clip filename already set in seg['audio_clip'].
+    Each segment is cut from its own channel via seg['_clip_source'] (stereo), falling
+    back to source_path (mono / unset) so clips stay channel-specific."""
     clip_dir.mkdir(parents=True, exist_ok=True)
     for seg in segments:
         clip_path = clip_dir / seg["audio_clip"]
@@ -440,7 +442,7 @@ def split_clips(
         subprocess.run(
             [
                 "ffmpeg", "-y",
-                "-i", source_path,
+                "-i", seg.get("_clip_source") or source_path,
                 "-ss", str(seg["_start_s"]),
                 "-t",  str(dur),
                 "-ar", str(CLIP_SAMPLE_RATE),
@@ -753,18 +755,31 @@ def transcribe_words(path: str, language: Optional[str]) -> Tuple[List[Dict], st
         r = groq.audio.transcriptions.create(file=f, **_kw)
     detected = getattr(r, "language", None) or detected
 
-    def _as_dict(o: Any) -> Dict:
-        return o if isinstance(o, dict) else {
-            "avg_logprob": getattr(o, "avg_logprob", None),
-            "words": getattr(o, "words", None),
-            "word": getattr(o, "word", None),
-            "text": getattr(o, "text", None),
-            "start": getattr(o, "start", None),
-            "end": getattr(o, "end", None),
+    def _word_dict(w: Any) -> Dict:
+        """Normalise a single SDK word object to a plain dict so _emit().get()
+        works and confidence (probability) is preserved, not dropped."""
+        if isinstance(w, dict):
+            return w
+        return {
+            "word": getattr(w, "word", None),
+            "text": getattr(w, "text", None),
+            "start": getattr(w, "start", None),
+            "end": getattr(w, "end", None),
+            "probability": getattr(w, "probability", None),
+            "prob": getattr(w, "prob", None),
         }
 
-    segs = [_as_dict(s) for s in (getattr(r, "segments", []) or [])]
-    top  = [_as_dict(w) for w in (getattr(r, "words", []) or [])]
+    def _seg_dict(s: Any) -> Dict:
+        """Normalise a segment, converting its nested SDK word objects to dicts."""
+        if isinstance(s, dict):
+            return s
+        return {
+            "avg_logprob": getattr(s, "avg_logprob", None),
+            "words": [_word_dict(w) for w in (getattr(s, "words", None) or [])],
+        }
+
+    segs = [_seg_dict(s) for s in (getattr(r, "segments", []) or [])]
+    top  = [_word_dict(w) for w in (getattr(r, "words", []) or [])]
     words = _parse_words(segs, top)
     return words, detected
 
@@ -785,6 +800,8 @@ def vad_first_channel(
             "start": m["start"], "end": m["end"], "text": m["text"],
             "speaker": speaker_label,
             "avg_logprob": math.log(max(m["avg_prob"], 1e-9)),
+            # Clip from THIS channel's isolated audio, not the mixed file.
+            "_clip_source": channel_wav,
         })
     return segs, lang
 
@@ -849,11 +866,8 @@ def process_vad(
             left, right = split_stereo_channels(local_path, tmp_dir)
             a_segs, a_lang = vad_first_channel(left,  "Speaker A", language or None)
             b_segs, b_lang = vad_first_channel(right, "Speaker B", language or None)
-            for _p in (left, right):
-                try:
-                    os.remove(_p)
-                except Exception:
-                    pass
+            # Keep L/R on disk until clips are cut — each segment is clipped from
+            # its own channel (_clip_source). tmp_dir cleanup removes them later.
             raw_segs = sorted(a_segs + b_segs, key=lambda s: s["start"])
             if language:
                 detected_lang = language
@@ -862,9 +876,13 @@ def process_vad(
                 b_chars = sum(len(s["text"]) for s in b_segs)
                 detected_lang = a_lang if a_chars >= b_chars else b_lang
         else:
-            print("Mono — single-channel customer Silero VAD + word-level transcription")
+            # Mono has no channel separation, so speaker identity cannot be derived
+            # here — label "Unknown" rather than asserting "Customer" (which would
+            # mislabel any agent speech). The LS annotator sets the speaker; export
+            # then keeps only customer segments.
+            print("Mono — single-channel Silero VAD + word-level transcription (speaker Unknown)")
             raw_segs, detected_lang = vad_first_channel(
-                local_path, "Customer", language or None,
+                local_path, "Unknown", language or None,
             )
 
         print(f"VAD-first segments: {len(raw_segs)} | Language: {detected_lang}")
@@ -918,6 +936,7 @@ def process_vad(
                 "_start_s":        s["start"],
                 "_end_s":          s["end"],
                 "_avg_logprob":    lp,
+                "_clip_source":    s.get("_clip_source"),
             })
 
         print(f"Final segments: {len(final_segments)}")
