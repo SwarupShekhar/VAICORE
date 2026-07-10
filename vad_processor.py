@@ -354,63 +354,70 @@ def confidence_label(avg_logprob: Optional[float], threshold: float) -> str:
 
 # ── Segmentation ───────────────────────────────────────────────────────────────
 
-def merge_close_segments(segments: List[Dict]) -> List[Dict]:
-    """Merge consecutive same-speaker segments with gap ≤ SEGMENT_MERGE_GAP_S,
-    capped at MAX_SEGMENT_DURATION_S."""
+def merge_and_pad_segments(segments: List[Dict]) -> List[Dict]:
+    """Merge same-speaker segments with gap <= SEGMENT_MERGE_GAP_S, provided no 
+    other speaker intervenes. Then apply BOUNDARY_PADDING_S to boundaries, ensuring 
+    no overlaps occur between segments."""
+    if not segments:
+        return []
+
+    segments.sort(key=lambda s: s["start"])
     merged: List[Dict] = []
+    
     for s in segments:
         if not merged:
             merged.append(dict(s))
             continue
+            
         prev = merged[-1]
-        gap          = s["start"] - prev["end"]
-        would_be_dur = s["end"] - prev["start"]
-        if (prev["speaker"] == s["speaker"]
-                and gap <= SEGMENT_MERGE_GAP_S
-                and would_be_dur <= MAX_SEGMENT_DURATION_S):
+        gap = s["start"] - prev["end"]
+        
+        # If consecutive segments are the same speaker, no other speaker spoke in between.
+        if prev["speaker"] == s["speaker"] and gap <= SEGMENT_MERGE_GAP_S and (s["end"] - prev["start"]) <= MAX_SEGMENT_DURATION_S:
             prev_dur = prev["end"] - prev["start"]
-            new_dur  = s["end"]   - s["start"]
-            total    = prev_dur + new_dur
+            new_dur  = s["end"] - s["start"]
+            total = prev_dur + new_dur
             prev["avg_logprob"] = (
                 (prev.get("avg_logprob") or 0.0) * prev_dur +
-                (s.get("avg_logprob")   or 0.0) * new_dur
+                (s.get("avg_logprob") or 0.0) * new_dur
             ) / total if total > 0 else 0.0
-            prev["end"]  = s["end"]
-            prev["text"] = (prev["text"] + " " + s["text"]).strip()
+            prev["end"] = max(prev["end"], s["end"])
+            if s["text"]:
+                prev["text"] = (prev["text"] + " " + s["text"]).strip()
         else:
             merged.append(dict(s))
-    return merged
 
-
-def apply_boundary_padding(segments: List[Dict], audio_duration: float) -> List[Dict]:
-    """
-    Add BOUNDARY_PADDING_S to each segment boundary, but only when the adjacent
-    gap is wide enough (≥ 2×pad) — i.e. the adjacent audio is silence, not speech.
-    Uses original boundary values to compute gaps so modifications don't cascade.
-    """
-    if not segments:
-        return []
-    orig_starts = [s["start"] for s in segments]
-    orig_ends   = [s["end"]   for s in segments]
-    out = [dict(s) for s in segments]
-    n = len(segments)
-
-    for i in range(n):
-        prev_end   = orig_ends[i - 1]   if i > 0   else 0.0
-        next_start = orig_starts[i + 1] if i < n-1 else audio_duration
-
-        gap_left  = orig_starts[i] - prev_end
-        gap_right = next_start - orig_ends[i]
-
+    out: List[Dict] = []
+    for i in range(len(merged)):
+        cur = merged[i]
+        prev_end = out[-1]["end"] if out else 0.0
+        next_start = merged[i+1]["start"] if i < len(merged) - 1 else float('inf')
+        
+        start = cur["start"]
+        end = cur["end"]
+        
+        if start < prev_end:
+            start = prev_end
+        if start > end:
+            end = start
+            
+        gap_left = start - prev_end
         if gap_left > 0:
             pad = min(BOUNDARY_PADDING_S, gap_left / 2.0)
-            out[i]["start"] = max(prev_end, orig_starts[i] - pad)
-        
+            start -= pad
+            
+        gap_right = next_start - end
         if gap_right > 0:
             pad = min(BOUNDARY_PADDING_S, gap_right / 2.0)
-            out[i]["end"] = min(next_start, orig_ends[i] + pad)
+            end += pad
+            
+        cur["start"] = start
+        cur["end"] = end
+        
+        if round(end - start, 3) > 0:
+            out.append(cur)
 
-    return [s for s in out if round(s["end"] - s["start"], 3) > 0]
+    return out
 
 
 def get_audio_duration(path: str) -> float:
@@ -887,8 +894,9 @@ def process_vad(
 
         print(f"VAD-first segments: {len(raw_segs)} | Language: {detected_lang}")
 
-        # VAD regions already carry speech_pad_ms padding and are split at ≥2s
-        # silence, so no extra boundary-padding or same-speaker merge is applied.
+        # Merge close same-speaker segments and apply boundary padding globally
+        # to ensure no overlapping segments between speakers.
+        raw_segs = merge_and_pad_segments(raw_segs)
 
         # ── Step 4: Filter IVR ─────────────────────────────────────────────────
         before_ivr = len(raw_segs)

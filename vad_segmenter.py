@@ -28,9 +28,9 @@ _SAMPLE_RATE = 16000  # channels are produced as 16kHz mono WAV (processor.py:40
 class VadConfig:
     """Silero VAD tunables. threshold and min_silence_ms are the live knobs."""
     threshold: float = 0.5
-    min_silence_ms: int = 2000   # silence ≥2s ends a segment (guideline 109/113)
+    min_silence_ms: int = 100    # Extract tight segments first to prevent cross-speaker merging
     min_speech_ms: int = 250
-    speech_pad_ms: int = 250      # 200–300ms padding into silence (guideline 100)
+    speech_pad_ms: int = 0       # Padding is applied globally after merging to avoid overlaps
 
 
 # ── Silero model — lazy module-level singleton ──────────────────────────────────
