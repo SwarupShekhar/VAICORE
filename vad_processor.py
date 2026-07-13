@@ -765,7 +765,7 @@ def transcribe_words(path: str, language: Optional[str]) -> Tuple[List[Dict], st
                     data = {
                         "model": "Systran/faster-whisper-large-v3",
                         "response_format": "verbose_json",
-                        "timestamp_granularities": "word",
+                        "timestamp_granularities[]": "word",
                         "temperature": "0.0",
                         "vad_filter": "true",
                     }
