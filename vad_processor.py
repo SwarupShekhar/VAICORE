@@ -730,19 +730,51 @@ def transcribe_words(path: str, language: Optional[str]) -> Tuple[List[Dict], st
 
     if raw_url:
         try:
-            with open(path, "rb") as f:
-                data = {
-                    "model": "Systran/faster-whisper-large-v3",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities": "word",
-                    "temperature": "0.0",
-                    "vad_filter": "true",
+            if "runsync" in raw_url or "run" in raw_url:
+                import base64
+                with open(path, "rb") as f:
+                    audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+                
+                payload = {
+                    "input": {
+                        "endpoint": "/v1/audio/transcriptions",
+                        "file": audio_b64,
+                        "model": "Systran/faster-whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities": ["word"],
+                        "temperature": 0.0,
+                        "vad_filter": True
+                    }
                 }
                 if language:
-                    data["language"] = language
-                resp = _req.post(raw_url, files={"file": f}, data=data, timeout=600)
+                    payload["input"]["language"] = language
+                
+                headers = {"Content-Type": "application/json"}
+                api_key = os.getenv("RUNPOD_API_KEY")
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                
+                resp = _req.post(raw_url, json=payload, headers=headers, timeout=600)
                 resp.raise_for_status()
+                # Runpod serverless wrapper returns output inside 'output' key
                 rj = resp.json()
+                if "output" in rj:
+                    rj = rj["output"]
+            else:
+                with open(path, "rb") as f:
+                    data = {
+                        "model": "Systran/faster-whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities": "word",
+                        "temperature": "0.0",
+                        "vad_filter": "true",
+                    }
+                    if language:
+                        data["language"] = language
+                    resp = _req.post(raw_url, files={"file": f}, data=data, timeout=600)
+                    resp.raise_for_status()
+                    rj = resp.json()
+
             words = _parse_words(rj.get("segments", []), rj.get("words", []))
             if words:
                 return words, rj.get("language", detected)
