@@ -48,8 +48,8 @@ load_dotenv()
 CLIENT_CODE         = "CLIENT002"
 UNKNOWN_THRESHOLD   = float(os.getenv("VAD_UNKNOWN_THRESHOLD", "-2.0"))
 DEFAULT_LANGUAGE    = os.getenv("VAD_LANGUAGE", "hi")
-SEGMENT_MERGE_GAP_S    = 2.0   # merge same-speaker segments whose gap is ≤ this
-MAX_SEGMENT_DURATION_S = 30.0  # never produce a segment longer than this
+SEGMENT_MERGE_GAP_S    = 0.5   # merge same-speaker segments whose gap is ≤ this
+MAX_SEGMENT_DURATION_S = 15.0  # never produce a segment longer than this
 BOUNDARY_PADDING_S  = 0.250  # 250ms silence padding applied to each boundary
 CLIP_SAMPLE_RATE    = 8000
 CLIP_CHANNELS       = 1
@@ -1033,9 +1033,9 @@ def process_vad(
         print(f"ZIP: {zip_full}  ({os.path.getsize(zip_full) // 1024} KB)")
 
         # ── Step 12: Upload ZIP + JSON to client-delivery ─────────────────────
-        # For Bajaj, we upload the raw generated zip and json, though final delivery is post-LS.
-        delivery_blob = upload_zip_to_delivery(conn, zip_full, file_id)
-        upload_json_to_delivery(conn, transcript_data, file_id)
+        # For Bajaj, we DO NOT upload the raw generated zip and json to delivery.
+        # They will be pushed to Label Studio for review, and exported to delivery later.
+        delivery_blob = "pending_review"
         # ── Step 13: Push to Label Studio ──────────────────────────────────────
         print("Pushing segments to Label Studio...")
         ls_result = push_to_label_studio(

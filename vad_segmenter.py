@@ -93,6 +93,7 @@ def map_words_to_regions(
     (silence / hallucination). For each region with ≥1 word, emit
     {text, start, end, avg_prob}; empty regions are dropped. Region order is
     preserved and words within a region are joined in start-time order.
+    Additionally, any gap between words > 0.5s will split the segment.
     """
     buckets: List[List[Dict]] = [[] for _ in regions]
     for w in words:
@@ -102,16 +103,39 @@ def map_words_to_regions(
             buckets[idx].append(w)
 
     segments: List[Dict] = []
-    for (start, end), members in zip(regions, buckets):
+    MAX_WORD_GAP = 0.5
+
+    for (region_start, region_end), members in zip(regions, buckets):
         if not members:
             continue
         members.sort(key=lambda w: w["start"])
-        text = " ".join(w["text"] for w in members)
-        avg_prob = sum(w["prob"] for w in members) / len(members)
-        segments.append({
-            "text": text,
-            "start": start,
-            "end": end,
-            "avg_prob": avg_prob,
-        })
+        
+        # Split into sub-buckets if word gap > MAX_WORD_GAP
+        sub_buckets = []
+        current_sub = [members[0]]
+        
+        for w in members[1:]:
+            if w["start"] - current_sub[-1]["end"] > MAX_WORD_GAP:
+                sub_buckets.append(current_sub)
+                current_sub = [w]
+            else:
+                current_sub.append(w)
+        if current_sub:
+            sub_buckets.append(current_sub)
+            
+        for i, sub in enumerate(sub_buckets):
+            text = " ".join(w["text"] for w in sub)
+            avg_prob = sum(w["prob"] for w in sub) / len(sub)
+            
+            # Tightly bound the sub-bucket to the words, with a tiny pad,
+            # but don't exceed the original region's boundaries
+            start = max(region_start, sub[0]["start"] - 0.1)
+            end = min(region_end, sub[-1]["end"] + 0.1)
+            
+            segments.append({
+                "text": text,
+                "start": start,
+                "end": end,
+                "avg_prob": avg_prob,
+            })
     return segments
