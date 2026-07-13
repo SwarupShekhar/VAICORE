@@ -1820,7 +1820,7 @@ async def run_jewelry_pipeline(
             predictions = await _get_image_preannotations(image_url, project_type)
             log.info(f"Pre-annotation complete: {len(predictions)} regions for {project_type}.")
 
-        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        await update_log_status(client_code, original_filename, timestamp, "In Review")
 
         # 3. Push to Label Studio inside a non-blocking threadpool
         ls_result = await asyncio.to_thread(
@@ -1890,7 +1890,7 @@ async def run_form_pipeline(
         # 3. Apply Local PII Redaction/Masking before reviewer exposure (Name, Phone, Bank, Aadhaar, PAN)
         anonymized_text = mask_text_data(raw_text)
         
-        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        await update_log_status(client_code, original_filename, timestamp, "In Review")
         
         # 4. Push masked data to secure Label Studio project
         ls_result = await asyncio.to_thread(push_form_to_labelstudio, original_filename, client_code, anonymized_text)
@@ -1936,7 +1936,7 @@ async def run_clickstream_pipeline(
         # 2. Parse clickstream timeline events dynamically using our analysis engine
         clickstream_data = await asyncio.to_thread(parse_clickstream_logs, raw_content, original_filename)
         
-        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        await update_log_status(client_code, original_filename, timestamp, "In Review")
         
         # 3. Push timeline actions to Label Studio inside threadpool
         ls_result = await asyncio.to_thread(push_clickstream_to_labelstudio, original_filename, client_code, clickstream_data)
@@ -1984,7 +1984,7 @@ async def run_transcript_pipeline(
         from transcript_parser import parse_transcript_content
         segments = await asyncio.to_thread(parse_transcript_content, raw_content, original_filename)
         
-        await update_log_status(client_code, original_filename, timestamp, "Reviewing")
+        await update_log_status(client_code, original_filename, timestamp, "In Review")
         
         # 3. Push segments with pre-annotations to Label Studio inside threadpool
         ls_result = await asyncio.to_thread(push_text_transcript_to_labelstudio, original_filename, client_code, segments)
