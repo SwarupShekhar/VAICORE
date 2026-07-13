@@ -605,7 +605,16 @@ def process_audio(blob_filename: str, client_code: str, language: str = None) ->
                         if os.path.exists(temp_wav_path):
                             os.remove(temp_wav_path)
                     
-                    for turn, _, speaker in diarization.itertracks(yield_label=True):
+                    if hasattr(diarization, 'itertracks'):
+                        tracks = diarization.itertracks(yield_label=True)
+                    elif hasattr(diarization, 'tracks'):
+                        # fallback for alternative output objects
+                        tracks = diarization.tracks()
+                    else:
+                        log.error(f"Unknown diarization object type: {type(diarization)} - Attributes: {dir(diarization)}")
+                        raise AttributeError(f"Diarization output missing itertracks: {type(diarization)}")
+
+                    for turn, _, speaker in tracks:
                         speaker_segments.append({
                             "start": turn.start,
                             "end": turn.end,
