@@ -730,7 +730,7 @@ def transcribe_words(path: str, language: Optional[str]) -> Tuple[List[Dict], st
 
     if raw_url:
         try:
-            if "runsync" in raw_url or "run" in raw_url:
+            if "runsync" in raw_url or "api.runpod.ai/v2" in raw_url:
                 import base64
                 with open(path, "rb") as f:
                     audio_b64 = base64.b64encode(f.read()).decode("utf-8")
