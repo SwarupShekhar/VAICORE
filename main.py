@@ -1353,7 +1353,7 @@ async def run_full_pipeline(
 
         if result['status'] == 'success':
             log.info(f"Audio processing complete: {result['segments']} segments")
-            await update_log_status(client_code, original_filename, timestamp, "Reviewing", language=result.get('language'))
+            await update_log_status(client_code, original_filename, timestamp, "In Review", language=result.get('language'))
 
             try:
                 ls_result = await asyncio.to_thread(
