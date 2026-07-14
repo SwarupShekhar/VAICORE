@@ -311,7 +311,7 @@ def detect_speaker_map(segments: List[Dict]) -> Dict[str, str]:
 # ── Punctuation stripping ──────────────────────────────────────────────────────
 # Bajaj spec: no ।  , ? . or any special symbols.
 
-_PUNCT_RE = re.compile(r'[।॥\.,\?!;:\'"()\[\]{}\-–—/\\|@#%^&*+=<>~`]')
+_PUNCT_RE = re.compile(r'[।॥\.,\?!;:\'"()\[\]{}\-–—/\\|@#%^&*+=~`]')
 
 
 def strip_punctuation(text: str) -> str:

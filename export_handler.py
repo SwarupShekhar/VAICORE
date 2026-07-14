@@ -1359,7 +1359,7 @@ def export_vad(
         except ImportError:
             def strip_punctuation(text: str) -> str:
                 import re
-                return re.sub(r'[।॥\.,\?!;:\'"()\[\]{}\-–—/\\|@#%^&*+=<>~`]', '', text)
+                return re.sub(r'[।॥\.,\?!;:\'"()\[\]{}\-–—/\\|@#%^&*+=~`]', '', text)
             def expand_abbreviations(text: str) -> str:
                 return text
             def digits_to_hindi_words(text: str) -> str:

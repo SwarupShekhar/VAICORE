@@ -594,7 +594,7 @@
                     </div>
                     <div style="display:flex; align-items:center; gap:12px;" onclick="event.stopPropagation()">
                         <span class="${_pipeStatusClass(parent.status)}">${esc(parent.status)}</span>
-                        ${(parent.status !== 'Delivered' && parent.status !== 'Purged') ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch</button>` : ''}
+                        ${(parent.status !== 'Purged') ? `<button class="btn-small" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deliverBatch('${esc(clientCode)}', '${esc(batchId)}')">Deliver Batch (Re-package)</button>` : ''}
                         <button class="btn-small btn-delete" style="padding:4px 10px; font-size:0.72rem; height:24px; display:inline-flex; align-items:center;" onclick="deleteBatch('${esc(batchId)}')">Delete</button>
                     </div>
                 `;
@@ -704,7 +704,7 @@
                     const isReady = item.completion_percentage === 100 || item.status === 'Review Finished' || item.status === 'Completed';
 
                     let checkboxHtml = '';
-                    if (!isDelivered) {
+                    if (item.status !== 'Purged') {
                         tr.className = 'row-selectable';
                         const key = item.client_code + "___" + item.filename;
                         const isChecked = window.selectedDeliverFiles && window.selectedDeliverFiles[key] ? 'checked' : '';
