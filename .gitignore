@@ -45,3 +45,4 @@ collateral_signatures.json
 *.wav
 *.srt
 transcribe_backend/uploads/
+clients.json
