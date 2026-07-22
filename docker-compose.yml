@@ -2,7 +2,7 @@ services:
   vaidikai-portal:
     build: .
     ports:
-      - "4005:8000"
+      - "127.0.0.1:4005:8000"
     env_file:
       - .env
     environment:
@@ -27,7 +27,7 @@ services:
   labelstudio:
     image: heartexlabs/label-studio:1.13.1
     ports:
-      - "4006:8080"
+      - "127.0.0.1:4006:8080"
     volumes:
       - /opt/vaidikai-data/labelstudio:/label-studio/data
     environment:
@@ -54,7 +54,7 @@ services:
       - LABEL_STUDIO_HOST=http://labelstudio:8080
       - LABEL_STUDIO_ACCESS_TOKEN=${LABEL_STUDIO_API_KEY}
     ports:
-      - "4007:9090"
+      - "127.0.0.1:4007:9090"
     volumes:
       - /opt/vaidikai-data/labelstudio/sam_models:/data
     restart: always
@@ -66,7 +66,7 @@ services:
     container_name: vaidikai-postgres
     restart: unless-stopped
     ports:
-      - "4020:5432"
+      - "127.0.0.1:4020:5432"
     env_file:
       - .env
     environment:
@@ -88,7 +88,7 @@ services:
     container_name: vaidikai-valkey
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - valkey_data:/data
     networks:
