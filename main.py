@@ -99,8 +99,8 @@ async def get_project_id_for_file(client_code: str, filename: str) -> str:
     return get_client_project_id(client_code, "jewelry", "LABEL_STUDIO_JEWELRY_PROJECT_ID", "2")
 from runpod_client import run_runpod_inference
 from redactor import mask_text_data
-from ocr_fallback import local_ocr_scan
-from clickstream_parser import parse_clickstream_logs
+# from ocr_fallback import local_ocr_scan
+# from clickstream_parser import parse_clickstream_logs
 from export_handler import check_annotation_status, export_and_deliver
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -1973,38 +1973,7 @@ async def run_jewelry_pipeline(
                 log.warning(f"WARNING: RunPod inference failed: {inference_result.get('message')}. Proceeding with empty predictions.")
 
             # 2b. Collateral duplicate detection (non-blocking — never stalls pipeline)
-            if predictions:
-                try:
-                    from collateral_detector import find_duplicates, generate_signature
-                    image_np = await asyncio.to_thread(_fetch_image_numpy, image_url)
-                    if image_np is not None:
-                        h_px, w_px = image_np.shape[:2]
-                        sigs = []
-                        for idx, pred in enumerate(predictions):
-                            sig = generate_signature(
-                                image_np, pred.get("points", []),
-                                pred.get("class", "Jewelry"), client_code,
-                                task_id=0, item_index=idx,
-                                image_file=original_filename,
-                                img_width=w_px, img_height=h_px,
-                            )
-                            if sig:
-                                sigs.append(sig)
-                        if sigs:
-                            matches = await asyncio.to_thread(find_duplicates, sigs)
-                            if matches:
-                                top = matches[0]
-                                warn = (f"Matches {top['matched_item']['image_file']} "
-                                        f"({top['similarity']:.0%} similar)")
-                                log.info(f"[Collateral] DUPLICATE DETECTED: {original_filename} — {warn}")
-                                await update_log_status(
-                                    client_code, original_filename, timestamp,
-                                    "Duplicate Detected", error=warn,
-                                )
-                            else:
-                                log.info(f"[Collateral] No duplicates found for {original_filename}.")
-                except Exception as cd_err:
-                    log.info(f"[Collateral] Detection skipped (non-blocking): {cd_err}")
+            # 2b. Collateral duplicate detection was removed in Phase 1 purge.
         else:
             # 2c. House / Business: SAM → OpenCV fallback pre-annotations
             log.info(f"Generating pre-annotations for {project_type} via SAM → OpenCV fallback...")
@@ -2075,8 +2044,8 @@ async def run_form_pipeline(
                 raise Exception("Non-success RunPod response")
         except Exception as e:
             log.warning(f"WARNING: RunPod Form OCR failed ({str(e)}). Routing to local OCR Fallback Sandbox...")
-            # Route to our robust local OCR fallbacks (EasyOCR or Sandbox Simulation)
-            raw_text = await asyncio.to_thread(local_ocr_scan, doc_url)
+            log.error("Local OCR Fallback was removed in Phase 1 purge. Failing.")
+            raise e
         
         # 3. Apply Local PII Redaction/Masking before reviewer exposure (Name, Phone, Bank, Aadhaar, PAN)
         anonymized_text = mask_text_data(raw_text)
@@ -2124,8 +2093,8 @@ async def run_clickstream_pipeline(
         except Exception as e:
             log.warning(f"WARNING: Failed to fetch raw clickstream blob from Azure ({str(e)}). Proceeding with simulation fallback...")
 
-        # 2. Parse clickstream timeline events dynamically using our analysis engine
-        clickstream_data = await asyncio.to_thread(parse_clickstream_logs, raw_content, original_filename)
+        log.error("Clickstream parser was removed in Phase 1 purge. Failing.")
+        raise Exception("Clickstream parser not available")
         
         await update_log_status(client_code, original_filename, timestamp, "In Review")
         

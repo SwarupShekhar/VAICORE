@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
-from collateral_detector import generate_signature, find_duplicates, store_signatures
+# from collateral_detector import generate_signature, find_duplicates, store_signatures
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -1014,41 +1014,7 @@ def export_and_deliver(
             img = redact_faces_in_image(img, segments)
             
             # ── DUPLICATE COLLATERAL DETECTION ──────────────────────
-            # Generate signatures for each image label item
-            new_signatures = []
-            for item in segments:
-                pts = item.get("Points", [])
-                if item.get("RType") in ("polygonlabels", "rectanglelabels") and pts:
-                    sig = generate_signature(
-                        image=img,
-                        polygon_points=pts,
-                        category=item["Category"],
-                        client_code=client_code,
-                        task_id=matched_tasks[0].get("id", 0) if matched_tasks else 0,
-                        item_index=item["Item #"],
-                        image_file=original_filename,
-                        img_width=w,
-                        img_height=h,
-                    )
-                    if sig:
-                        new_signatures.append(sig)
-            
-            # Check for duplicates against historical database
-            if new_signatures and not force_delivery:
-                matches = find_duplicates(new_signatures)
-                if matches:
-                    # Clean up temp files
-                    os.remove(img_path)
-                    shutil.rmtree(base_dir, ignore_errors=True)
-                    
-                    return {
-                        "status": "duplicate_warning",
-                        "matches": matches,
-                        "total_matches": len(matches),
-                        "message": f"⚠️ COLLATERAL MATCH DETECTED: {len(matches)} item(s) match historical records. Review required before delivery.",
-                    }
-            
-            print(f"[Collateral Detector] No duplicates found. Proceeding with delivery.")
+            # Removed in Phase 1 purge
             
             # 3) Generate COCO JSON & draw polygons
             coco = {
@@ -1141,8 +1107,8 @@ def export_and_deliver(
                 pass
                 
             # Store signatures after successful delivery
-            if new_signatures:
-                store_signatures(new_signatures)
+            # if new_signatures:
+            #     store_signatures(new_signatures)
             
             return {
                 "status": "success",
