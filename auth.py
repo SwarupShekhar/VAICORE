@@ -64,3 +64,24 @@ require_super_admin = require_role(UserRole.SUPER_ADMIN.value)
 require_client_admin = require_role(
     UserRole.SUPER_ADMIN.value, UserRole.CLIENT_ADMIN.value
 )
+
+# ---------------------------------------------------------------------------
+# CSRF: double-submit cookie
+# ---------------------------------------------------------------------------
+
+import hmac
+
+def csrf_tokens_match(header_token: str | None, cookie_token: str | None) -> bool:
+    """Pure, testable double-submit check: both present and equal (constant-time)."""
+    if not header_token or not cookie_token:
+        return False
+    return hmac.compare_digest(header_token, cookie_token)
+
+async def require_csrf(
+    request: Request,
+    x_csrf_token: str = Header(None),
+    csrf_token: str = Cookie(None),
+) -> None:
+    """Dependency enforcing the double-submit-cookie CSRF pattern."""
+    if not csrf_tokens_match(x_csrf_token, csrf_token):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid")

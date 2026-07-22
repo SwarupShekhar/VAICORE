@@ -39,6 +39,7 @@ from sqlalchemy import select, update
 from database import get_db_session, get_db
 from models import Client, ClientDownloadToken, User, UserRole, hash_password, verify_password
 from auth import (
+    require_csrf,
     create_access_token,
     get_current_user,
     require_super_admin,
@@ -370,16 +371,11 @@ async def verify_session_client(client_code: str, session_cookie: str | None) ->
 async def verify_client_or_admin(
     client_code: str,
     vaicore_session: str | None = None,
-    vaicore_admin: str | None = None,
     access_token: str | None = None,
 ):
     """Allow access if the request is from the specific client or an authorized admin."""
 
-    try:
-        _check_admin(vaicore_admin)
-        return  # Admin is always authorized
-    except HTTPException:
-        pass
+
 
     # Check new JWT
     if access_token:
@@ -485,9 +481,8 @@ async def client_download_file(download_token: str):
 
 
 @app.post("/api/admin/clients/{token}/generate-upload-link")
-async def generate_upload_link(token: str, vaicore_admin: str = Cookie(None)):
+async def generate_upload_link(token: str, actor: User = Depends(require_super_admin)):
     """Generate or regenerate a client's upload token."""
-    _check_admin(vaicore_admin)
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -502,10 +497,9 @@ async def generate_download_link(
     token: str,
     blob_path: str = Form(...),
     label: str = Form(""),
-    vaicore_admin: str = Cookie(None)
+    actor: User = Depends(require_super_admin)
 ):
     """Generate a one-time download link for a specific delivered file."""
-    _check_admin(vaicore_admin)
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -816,10 +810,10 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
 async def get_files(
     client_code: str,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     status_map = {}
     logs = []
@@ -891,10 +885,10 @@ async def get_transcript(
     client_code: str,
     full_name: str,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -919,10 +913,10 @@ async def get_annotation_status(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     project_id = await get_project_id_for_file(client_code, filename)
 
@@ -936,10 +930,10 @@ async def export_results(
     filename: str,
     internal: bool = False,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     project_id = await get_project_id_for_file(client_code, filename)
 
@@ -978,10 +972,9 @@ async def export_results(
 @app.post("/api/admin/package-delivery")
 async def package_delivery(
     request: Request,
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
 ):
     """PM selects completed files → builds one ZIP from their LS exports → uploads to client-delivery → returns blob_path."""
-    _check_admin(vaicore_admin)
     body = await request.json()
     client_code: str = body.get("client_code", "")
     filenames: list = body.get("filenames", [])
@@ -1056,10 +1049,9 @@ async def export_results_force(
     client_code: str,
     filename: str,
     internal: bool = False,
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
 ):
     """Force delivery despite duplicate collateral warnings (admin override)."""
-    _check_admin(vaicore_admin)
 
     project_id = await get_project_id_for_file(client_code, filename)
 
@@ -1086,10 +1078,10 @@ async def download_file(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -1119,10 +1111,10 @@ async def delete_delivery_file(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
+    await verify_client_or_admin(client_code, vaicore_session, access_token)
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
     ) as blob_service_client:
@@ -1214,8 +1206,7 @@ async def api_login(
     resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
     # Bridge: super_admins also get the legacy admin cookie so existing /api/admin/* stays super_admin-only.
     if user.role == UserRole.SUPER_ADMIN.value:
-        resp.set_cookie("vaicore_admin", _admin_token(), httponly=True, samesite="lax", max_age=86400 * 7)
-    return resp
+            return resp
 
 
 @app.post("/api/logout")
@@ -1324,8 +1315,7 @@ async def delete_user(
 
 
 @app.get("/api/admin/pipeline")
-async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_get_pipeline(actor: User = Depends(require_super_admin)):
     try:
         blobs_data = []
         try:
@@ -1408,9 +1398,8 @@ async def admin_get_pipeline(vaicore_admin: str = Cookie(None)):
 
 
 @app.delete("/api/admin/jobs/{client_code}/{filename}")
-async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str = Cookie(None)):
+async def admin_delete_job(client_code: str, filename: str, actor: User = Depends(require_super_admin)):
     """Deletes an old or failed job from the upload log and Azure to prevent ghost syncing."""
-    _check_admin(vaicore_admin)
     try:
         # 1. Delete from local database
         logs = await load_upload_log(client_code=client_code)
@@ -1437,8 +1426,7 @@ async def admin_delete_job(client_code: str, filename: str, vaicore_admin: str =
 
 
 @app.get("/api/admin/clients")
-async def admin_list_clients(vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_list_clients(actor: User = Depends(require_super_admin)):
     clients = await load_clients()
     return [
         {
@@ -1459,9 +1447,8 @@ async def admin_list_clients(vaicore_admin: str = Cookie(None)):
 async def admin_add_client(
     client_name: str = Form(...),
     contact_email: str = Form(""),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
 ):
-    _check_admin(vaicore_admin)
     clients = await load_clients()
     token = secrets.token_urlsafe(16)
     client_code = _next_client_code(clients)
@@ -1494,9 +1481,8 @@ async def admin_update_client(
     contact_email: str = Form(None),
     project_ids_json: str = Form(None),
     role_labels_json: str = Form(None),
-    vaicore_admin: str = Cookie(None),
+    actor: User = Depends(require_super_admin),
 ):
-    _check_admin(vaicore_admin)
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1529,8 +1515,7 @@ async def admin_update_client(
 
 
 @app.patch("/api/admin/clients/{token}/toggle")
-async def admin_toggle_client(token: str, vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_toggle_client(token: str, actor: User = Depends(require_super_admin)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1540,8 +1525,7 @@ async def admin_toggle_client(token: str, vaicore_admin: str = Cookie(None)):
 
 
 @app.post("/api/admin/clients/{token}/rotate")
-async def admin_rotate_token(token: str, vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_rotate_token(token: str, actor: User = Depends(require_super_admin)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1552,8 +1536,7 @@ async def admin_rotate_token(token: str, vaicore_admin: str = Cookie(None)):
 
 
 @app.delete("/api/admin/clients/{token}")
-async def admin_delete_client(token: str, vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_delete_client(token: str, actor: User = Depends(require_super_admin)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -2380,8 +2363,7 @@ async def run_zip_batch_pipeline(
 
 
 @app.post("/api/admin/batches/{batch_id}/deliver")
-async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_deliver_batch(batch_id: str, actor: User = Depends(require_super_admin)):
     try:
         # 1. Fetch child items from logs
         logs = await load_upload_log()
@@ -2466,8 +2448,7 @@ async def admin_deliver_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
 
 
 @app.delete("/api/admin/batches/{batch_id}")
-async def admin_delete_batch(batch_id: str, vaicore_admin: str = Cookie(None)):
-    _check_admin(vaicore_admin)
+async def admin_delete_batch(batch_id: str, actor: User = Depends(require_super_admin)):
     try:
         logs = await load_upload_log()
         

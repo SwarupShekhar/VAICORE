@@ -136,6 +136,23 @@
 
     <script src="/static/gsap.min.js"></script>
     <script>
+
+    // ── Global CSRF Fetch Override ──
+    const _origFetch = window.fetch;
+    window.fetch = async function(resource, config) {
+        config = config || {};
+        const method = (config.method || 'GET').toUpperCase();
+        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+            config.headers = config.headers || {};
+            const match = document.cookie.match(new RegExp('(^| )csrf_token=([^;]+)'));
+            if (match) {
+                config.headers['X-CSRF-Token'] = match[2];
+            }
+        }
+        return _origFetch.call(this, resource, config);
+    };
+
+
         (function () {
             var form = document.getElementById('login-form');
             var emailInput = document.getElementById('email');
