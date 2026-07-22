@@ -1205,10 +1205,26 @@ async def api_login(
 
 
 @app.post("/api/logout")
-async def api_logout():
+async def api_logout(
+    access_token: str = Cookie(None),
+    db: AsyncSession = Depends(get_db)
+):
+    if access_token:
+        try:
+            from auth import SECRET_KEY, ALGORITHM
+            import jwt
+            payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
+            jti = payload.get("jti")
+            if jti:
+                # Add to revoked token list
+                db.add(RevokedToken(jti=jti))
+                await db.commit()
+        except Exception as e:
+            pass
+            
     resp = JSONResponse({"success": True})
     resp.delete_cookie(COOKIE_NAME)
-    resp.delete_cookie("vaicore_admin")
+    resp.delete_cookie("csrf_token")
     return resp
 
 
@@ -1268,6 +1284,11 @@ async def create_user(
 
     if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
         raise HTTPException(status_code=400, detail="A user with this email already exists")
+
+    try:
+        validate_password(payload.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     user = User(
         email=email,

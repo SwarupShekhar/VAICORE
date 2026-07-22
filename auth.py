@@ -5,11 +5,11 @@ from datetime import datetime, timedelta, timezone
 
 import jwt  # PyJWT
 from dotenv import load_dotenv
-from fastapi import Cookie, Depends, HTTPException
+from fastapi import Cookie, Depends, HTTPException, Request, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from models import User, UserRole
+from models import User, UserRole, RevokedToken
 
 load_dotenv()
 
@@ -27,6 +27,7 @@ def create_access_token(user: User) -> str:
         "email": user.email,
         "role": user.role,
         "client_code": user.client_code,
+        "jti": str(uuid.uuid4()),
         "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL_HOURS),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -41,8 +42,14 @@ async def get_current_user(
     try:
         payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = uuid.UUID(payload["sub"])
+        jti = payload.get("jti")
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    if jti:
+        revoked = await db.get(RevokedToken, jti)
+        if revoked:
+            raise HTTPException(status_code=401, detail="Token has been revoked")
 
     user = await db.get(User, user_id)
     if user is None or not user.is_active:

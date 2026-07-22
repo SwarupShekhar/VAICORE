@@ -347,7 +347,7 @@ class User(Base):
         String(20), nullable=False
     )
     client_code: Mapped[Optional[str]] = mapped_column(
-        String(50), nullable=True, index=True
+        String(50), ForeignKey("clients.client_code", ondelete="CASCADE"), nullable=True, index=True
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False
@@ -400,3 +400,17 @@ event.listen(
     "after_create",
     create_trigger_ddl.execute_if(dialect="postgresql"),
 )
+
+def validate_password(pw: str) -> bool:
+    if len(pw) < 8:
+        raise ValueError("Password must be at least 8 characters long.")
+    if not any(c.isdigit() for c in pw):
+        raise ValueError("Password must contain at least one digit.")
+    if not any(c.isalpha() for c in pw):
+        raise ValueError("Password must contain at least one letter.")
+    return True
+
+class RevokedToken(Base):
+    __tablename__ = 'revoked_tokens'
+    jti: Mapped[str] = mapped_column(String, primary_key=True)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
