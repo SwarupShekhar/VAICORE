@@ -2552,7 +2552,4 @@ async def labelstudio_webhook(request: Request, background_tasks: BackgroundTask
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# -- Samsung Transcription Portal Mounts --
-from transcribe_backend.transcribe_main import app as transcribe_app
-app.mount("/transcribe_api", transcribe_app)
-app.mount("/transcribe", StaticFiles(directory="transcribe_frontend", html=True), name="transcribe_frontend")
+# Samsung Transcription Portal Mounts were removed in Phase 1 purge.
