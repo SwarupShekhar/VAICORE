@@ -34,6 +34,8 @@ services:
       - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
       - LABEL_STUDIO_HOST=https://annotate.vaidik.ai
       - CSRF_TRUSTED_ORIGINS=https://annotate.vaidik.ai,http://annotate.vaidik.ai
+      - LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
+      - DISABLE_SIGNUP_WITHOUT_LINK=true
     restart: always
     networks:
       - vaidikai-network

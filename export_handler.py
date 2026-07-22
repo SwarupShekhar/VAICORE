@@ -489,7 +489,7 @@ def export_and_deliver(
                 summary_values_list.append([cat, count])
             summary_values_list.append(["Total Items", len(segments)])
             
-            annotators_str = ", ".join(sorted(list(annotators))) or "Vaidik AI" if internal_export else "Vaidik AI"
+            annotators_str = ", ".join(sorted(list(annotators))) or "Vaicore" if internal_export else "Vaicore"
             summary_values_list.append(["Annotated By", annotators_str])
             summary_values_list.append(["Export Date", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
             
@@ -793,7 +793,7 @@ def export_and_deliver(
                 len(segments),
                 round(total_duration_secs / 60, 2),
                 ", ".join(unique_speakers),
-                ", ".join(sorted(list(annotators))) or "Vaidik AI" if internal_export else "Vaidik AI",
+                ", ".join(sorted(list(annotators))) or "Vaicore" if internal_export else "Vaicore",
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             ]]
 

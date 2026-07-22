@@ -82,15 +82,15 @@ jobs:
               fi
             fi
 
-            echo "🛑 Stopping and rebuilding portal containers (preserving LS data)..."
-            $DC stop vaidikai-portal sam-ml-backend celery-worker || true
-            $DC rm -f vaidikai-portal sam-ml-backend celery-worker || true
+            echo "🛑 Stopping and rebuilding containers (preserving LS data)..."
+            $DC stop vaidikai-portal sam-ml-backend celery-worker labelstudio || true
+            $DC rm -f vaidikai-portal sam-ml-backend celery-worker labelstudio || true
 
             # Use Docker layer cache: requirements.txt unchanged => the heavy
             # torch/pyannote pip layer is reused (was the ~8min of --no-cache).
             # Code is bind-mounted (.:/app) so it goes live regardless of build.
             echo "🔨 Building images (layer cache enabled)..."
-            $DC build vaidikai-portal sam-ml-backend celery-worker
+            $DC build vaidikai-portal sam-ml-backend celery-worker labelstudio
 
             echo "🚀 Starting all services..."
             $DC up -d

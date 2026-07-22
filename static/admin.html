@@ -268,6 +268,31 @@
         }
         tr.row-selectable:hover td { background: rgba(197,232,77,0.04); }
         tr.row-selectable.selected td { background: rgba(197,232,77,0.07); }
+
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            padding: 0 30px;
+            background-color: var(--card-bg);
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: #8a8a9a;
+            font-size: 0.92rem;
+            font-weight: 600;
+            padding: 14px 20px;
+            cursor: pointer;
+            transition: color 0.2s, border-color 0.2s;
+        }
+        .tab-btn:hover { color: var(--white); }
+        .tab-btn.active {
+            color: var(--accent-color);
+            border-bottom-color: #c5e84d;
+        }
     </style>
 </head>
 <body>
@@ -292,7 +317,13 @@
         <button class="btn-icon btn-delete" onclick="doLogout()">Sign Out</button>
     </div>
 
-    <div class="container" style="padding-top: 28px;">
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+        <button class="tab-btn active" id="tabbtn-clients" onclick="switchTab('clients')">Clients</button>
+        <button class="tab-btn" id="tabbtn-users" onclick="switchTab('users')">User Management</button>
+    </div>
+
+    <div class="container" id="tab-clients" style="padding-top: 28px;">
 
         <!-- Stats -->
         <div class="stats-row" id="stats-row">
@@ -355,11 +386,72 @@
             </table>
         </div>
     </div>
+
+    <div class="container" id="tab-users" style="padding-top: 28px; display: none;">
+
+        <!-- Create User -->
+        <div class="card">
+            <h2 style="margin-top:0">Create User</h2>
+            <div class="add-form">
+                <div class="field">
+                    <label>Email *</label>
+                    <input type="email" id="new-user-email" placeholder="user@company.com">
+                </div>
+                <div class="field">
+                    <label>Password *</label>
+                    <input type="text" id="new-user-password" placeholder="Set a password">
+                </div>
+                <div class="field">
+                    <label>Role *</label>
+                    <select id="new-user-role" style="padding:10px 14px;border:1px solid var(--grey);border-radius:4px;background:var(--bg-color);color:var(--white);min-width:200px;height:42px;">
+                        <option value="client_admin">Client Admin</option>
+                        <option value="business_user">Business User</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label>Client Code</label>
+                    <input type="text" id="new-user-client-code" placeholder="e.g. CLIENT001">
+                </div>
+                <button class="btn" style="height:42px" onclick="createUser()">+ Create User</button>
+            </div>
+            <div id="user-add-error" style="color:#ff6b6b;font-size:0.85rem;min-height:18px;margin-top:4px;"></div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="card">
+            <h2 style="margin-top:0">Users</h2>
+            <table class="client-table">
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Client Code</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="users-tbody">
+                    <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 
 <div id="toast"></div>
 
+<script src="/static/gsap.min.js"></script>
 <script>
+    // ── Motion (reduced-motion aware; no-op if GSAP blocked) ──
+    const _motion = !!window.gsap && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    function _revealPanel(el) {
+        if (_motion) gsap.from(el, { y: 16, autoAlpha: 0, duration: 0.5, ease: 'expo.out' });
+    }
+    function _staggerRows(rows) {
+        if (_motion && rows.length) gsap.from(rows, { y: 10, autoAlpha: 0, duration: 0.4, ease: 'expo.out', stagger: 0.04 });
+    }
+
     // ── Auth ──────────────────────────────────────────────
     async function doLogin() {
         const pw = document.getElementById('admin-password').value;
@@ -1397,6 +1489,125 @@
         el.classList.add('show');
         clearTimeout(_toastTimer);
         _toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+    }
+
+    // ── Tabs ──────────────────────────────────────────────
+    function switchTab(name) {
+        const isUsers = name === 'users';
+        document.getElementById('tab-clients').style.display = isUsers ? 'none' : 'block';
+        document.getElementById('tab-users').style.display = isUsers ? 'block' : 'none';
+        document.getElementById('tabbtn-clients').classList.toggle('active', !isUsers);
+        document.getElementById('tabbtn-users').classList.toggle('active', isUsers);
+        _revealPanel(document.getElementById(isUsers ? 'tab-users' : 'tab-clients'));
+        if (isUsers) loadUsers();
+    }
+
+    // ── User Management ───────────────────────────────────
+    function _fmtDate(val) {
+        if (!val) return '—';
+        const d = new Date(val);
+        if (isNaN(d.getTime())) return esc(String(val));
+        return d.toLocaleDateString();
+    }
+
+    async function loadUsers() {
+        const tbody = document.getElementById('users-tbody');
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">Loading...</td></tr>';
+        try {
+            const res = await fetch('/api/users', { credentials: 'same-origin' });
+            if (res.status === 403) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">You do not have permission to manage users.</td></tr>';
+                return;
+            }
+            if (!res.ok) {
+                tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color:#ff6b6b;">Failed to load users (${res.status}).</td></tr>`;
+                return;
+            }
+            const users = await res.json();
+            if (!Array.isArray(users) || users.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No users yet. Create one above.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = '';
+            users.forEach(u => {
+                const tr = document.createElement('tr');
+                const statusBadge = u.is_active
+                    ? `<span class="pipe-status pipe-status-delivered">Active</span>`
+                    : `<span class="pipe-status pipe-status-error">Inactive</span>`;
+                tr.innerHTML = `
+                    <td><strong>${esc(u.email)}</strong></td>
+                    <td style="color:var(--grey)">${esc(u.role || '—')}</td>
+                    <td style="font-family:monospace;color:var(--accent-color)">${esc(u.client_code || '—')}</td>
+                    <td>${statusBadge}</td>
+                    <td style="color:var(--grey)">${_fmtDate(u.created_at)}</td>
+                    <td class="actions">
+                        <button class="btn-icon btn-delete" onclick="deleteUser('${esc(u.id)}', '${esc(u.email)}')">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+            _staggerRows(tbody.querySelectorAll('tr'));
+        } catch (e) {
+            tbody.innerHTML = `<tr><td colspan="6" class="empty-state" style="color:#ff6b6b;">Network error loading users.<br><small>${esc(e.message)}</small></td></tr>`;
+        }
+    }
+
+    async function createUser() {
+        const email = document.getElementById('new-user-email').value.trim();
+        const password = document.getElementById('new-user-password').value;
+        const role = document.getElementById('new-user-role').value;
+        const clientCode = document.getElementById('new-user-client-code').value.trim();
+        const errDiv = document.getElementById('user-add-error');
+        errDiv.textContent = '';
+
+        if (!email) { errDiv.textContent = 'Email is required.'; return; }
+        if (!password) { errDiv.textContent = 'Password is required.'; return; }
+
+        try {
+            const res = await fetch('/api/users', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email,
+                    password,
+                    role,
+                    client_code: clientCode || null
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.success) {
+                document.getElementById('new-user-email').value = '';
+                document.getElementById('new-user-password').value = '';
+                document.getElementById('new-user-client-code').value = '';
+                document.getElementById('new-user-role').value = 'client_admin';
+                toast('User created');
+                loadUsers();
+            } else {
+                errDiv.textContent = data.detail || 'Failed to create user.';
+            }
+        } catch (e) {
+            errDiv.textContent = 'Connection error: ' + e.message;
+        }
+    }
+
+    async function deleteUser(id, email) {
+        if (!confirm(`Permanently delete user "${email}"?\n\nThis cannot be undone.`)) return;
+        const errDiv = document.getElementById('user-add-error');
+        try {
+            const res = await fetch(`/api/users/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && (data.success === undefined || data.success)) {
+                toast('User deleted');
+                loadUsers();
+            } else {
+                const detail = data.detail || 'Failed to delete user.';
+                if (errDiv) errDiv.textContent = detail;
+                toast(detail);
+            }
+        } catch (e) {
+            toast('Network error during deletion.');
+        }
     }
 
     boot();

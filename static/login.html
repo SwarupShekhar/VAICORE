@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vaicore — Sign In</title>
+    <style>
+        :root {
+            --bg-color: #0e0e11;
+            --card-bg: #16161a;
+            --accent-color: #c5e84d;
+            --white: #ffffff;
+            --grey: #8a8a9a;
+            --border: #2d2d34;
+            --error: #ff6b6b;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: Calibri, "Segoe UI", system-ui, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--white);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 380px;
+            width: 100%;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        }
+
+        .login-card h1 {
+            color: var(--accent-color);
+            margin: 0 0 4px;
+            font-size: 1.9rem;
+            text-align: center;
+            letter-spacing: 0.02em;
+        }
+
+        .login-card .subtitle {
+            color: var(--grey);
+            margin: 0 0 28px;
+            font-size: 0.95rem;
+            text-align: center;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 16px;
+        }
+
+        .field label {
+            font-size: 0.8rem;
+            color: var(--grey);
+            font-weight: bold;
+        }
+
+        .field input {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-color);
+            color: var(--white);
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        .field input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(197, 232, 77, 0.14);
+        }
+
+        .field input.has-error {
+            border-color: var(--error);
+            box-shadow: 0 0 0 3px rgba(255, 107, 107, 0.14);
+        }
+
+        .btn {
+            width: 100%;
+            background-color: var(--accent-color);
+            color: var(--bg-color);
+            border: none;
+            padding: 13px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            margin-top: 6px;
+            transition: opacity 0.2s;
+        }
+
+        .btn:hover { opacity: 0.88; }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+        .login-error {
+            color: var(--error);
+            font-size: 0.85rem;
+            margin-top: 12px;
+            min-height: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <main class="login-card">
+        <h1>Vaicore</h1>
+        <p class="subtitle">Sign In</p>
+
+        <form id="login-form" novalidate>
+            <div class="field">
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" autocomplete="email" required>
+            </div>
+            <div class="field">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" autocomplete="current-password" required>
+            </div>
+            <button type="submit" class="btn" id="submit-btn">Sign In</button>
+            <div class="login-error" id="error" role="alert" aria-live="polite"></div>
+        </form>
+    </main>
+
+    <script src="/static/gsap.min.js"></script>
+    <script>
+        (function () {
+            var form = document.getElementById('login-form');
+            var emailInput = document.getElementById('email');
+            var passwordInput = document.getElementById('password');
+            var submitBtn = document.getElementById('submit-btn');
+            var errorBox = document.getElementById('error');
+            var inputs = [emailInput, passwordInput];
+
+            var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            var animate = !!window.gsap && !reduce;
+
+            emailInput.focus();
+
+            // Entrance: card settles, contents stagger up. Falls back to plain visible if GSAP absent.
+            if (animate) {
+                gsap.from('.login-card', { y: 22, autoAlpha: 0, duration: 0.7, ease: 'expo.out' });
+                gsap.from('.login-card > *', {
+                    y: 14, autoAlpha: 0, duration: 0.55, ease: 'expo.out', stagger: 0.06, delay: 0.1
+                });
+            }
+
+            function clearErrorState() {
+                inputs.forEach(function (el) { el.classList.remove('has-error'); });
+            }
+            inputs.forEach(function (el) {
+                el.addEventListener('input', clearErrorState);
+            });
+
+            function showError(msg) {
+                errorBox.textContent = msg;
+                if (!msg) { clearErrorState(); return; }
+                inputs.forEach(function (el) { el.classList.add('has-error'); });
+                if (animate) {
+                    // Functional shake — short, no bounce/elastic.
+                    gsap.to('.login-card', {
+                        keyframes: { x: [0, -7, 6, -4, 3, 0] },
+                        duration: 0.45, ease: 'power1.inOut', clearProps: 'x'
+                    });
+                }
+            }
+
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+                showError('');
+
+                var email = emailInput.value.trim();
+                var password = passwordInput.value;
+
+                if (!email || !password) {
+                    showError('Invalid email or password.');
+                    return;
+                }
+
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Signing in…';
+
+                function reset() {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Sign In';
+                }
+
+                fetch('/api/login', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ email: email, password: password })
+                })
+                    .then(function (response) {
+                        return response.json()
+                            .catch(function () { return {}; })
+                            .then(function (data) {
+                                return { ok: response.ok, data: data };
+                            });
+                    })
+                    .then(function (result) {
+                        if (result.ok && result.data && result.data.success) {
+                            if (result.data.role === 'super_admin') {
+                                window.location.href = '/admin';
+                            } else {
+                                window.location.href = '/dashboard';
+                            }
+                            return;
+                        }
+                        reset();
+                        showError('Invalid email or password.');
+                    })
+                    .catch(function () {
+                        reset();
+                        showError('Invalid email or password.');
+                    });
+            });
+        })();
+    </script>
+</body>
+</html>

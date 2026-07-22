@@ -20,6 +20,21 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+import bcrypt
+
+
+def hash_password(password: str) -> str:
+    """Hash a plaintext password with bcrypt."""
+    # ponytail: bcrypt caps input at 72 bytes; truncate consistently in hash+verify.
+    return bcrypt.hashpw(password.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a plaintext password against a bcrypt hash."""
+    try:
+        return bcrypt.checkpw(password.encode("utf-8")[:72], hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 # ===========================================================================
@@ -35,6 +50,12 @@ class JobStatus(enum.Enum):
     PURGED = "Purged"
     ERROR = "Error"
     FAILED = "Failed"
+
+
+class UserRole(str, enum.Enum):
+    SUPER_ADMIN = "super_admin"
+    CLIENT_ADMIN = "client_admin"
+    BUSINESS_USER = "business_user"
 
 
 class JobCategory(enum.Enum):
@@ -304,6 +325,46 @@ class CollateralSignature(Base):
             f"<CollateralSignature(id={self.id}, task_id={self.task_id}, "
             f"category='{self.category}', phash='{self.phash}')>"
         )
+
+
+class User(Base):
+    """
+    Auth/RBAC account. Roles: super_admin, client_admin, business_user.
+    client_code is a loose tenant key (matches Client.client_code); NULL for super_admin.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    email: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
+    hashed_password: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )
+    client_code: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, index=True
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('super_admin', 'client_admin', 'business_user')",
+            name="chk_user_role",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(id={self.id}, email='{self.email}', role='{self.role}')>"
 
 
 # ===========================================================================

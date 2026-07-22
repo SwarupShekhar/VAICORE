@@ -1,6 +1,6 @@
 from logger import get_logger
 log = get_logger("vaidikai.main")
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Cookie, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Cookie, Request, Depends
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,8 +32,17 @@ from labelstudio_client import (
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
-from database import get_db_session
-from models import Client, ClientDownloadToken
+from database import get_db_session, get_db
+from models import Client, ClientDownloadToken, User, UserRole, hash_password, verify_password
+from auth import (
+    create_access_token,
+    get_current_user,
+    require_super_admin,
+    require_client_admin,
+    COOKIE_NAME,
+)
+from pydantic import BaseModel
+import uuid
 from upload_log_db import (
     load_upload_log,
     append_upload_log,
@@ -100,8 +109,33 @@ from auto_purge import run_purge
 
 load_dotenv()
 
+async def _seed_super_admin():
+    """Create a default super_admin from ADMIN_PASSWORD if no users exist (avoids lockout)."""
+    try:
+        async with get_db_session() as db:
+            if (await db.execute(select(User).limit(1))).scalar_one_or_none() is not None:
+                return
+            pw = os.getenv("ADMIN_PASSWORD", "")
+            if not pw:
+                log.warning("ADMIN_PASSWORD not set — skipping super_admin seed.")
+                return
+            email = os.getenv("SUPER_ADMIN_EMAIL", "admin@vaidik.ai").lower().strip()
+            db.add(User(
+                email=email,
+                hashed_password=hash_password(pw),
+                role=UserRole.SUPER_ADMIN.value,
+                client_code=None,
+                is_active=True,
+            ))
+            await db.commit()
+            log.info(f"Seeded default super_admin: {email}")
+    except Exception as e:
+        log.warning(f"super_admin seed skipped: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _seed_super_admin()
     scheduler = AsyncIOScheduler()
     # Run the purge job every day at 2:00 AM
     scheduler.add_job(run_purge, 'cron', hour=2, minute=0)
@@ -317,13 +351,29 @@ async def verify_client_or_admin(
     client_code: str,
     vaicore_session: str | None = None,
     vaicore_admin: str | None = None,
+    access_token: str | None = None,
 ):
     """Allow access if the request is from the specific client or an authorized admin."""
+
     try:
         _check_admin(vaicore_admin)
         return  # Admin is always authorized
     except HTTPException:
         pass
+
+    # Check new JWT
+    if access_token:
+        try:
+            payload = jwt.decode(access_token, SECRET_KEY, algorithms=[ALGORITHM])
+            # Super admin can access anything
+            if payload.get("role") == UserRole.SUPER_ADMIN.value:
+                return
+            # Client admin / Business user can only access their own client_code
+            if payload.get("client_code") == client_code:
+                return
+        except Exception:
+            pass
+
 
     await verify_session_client(client_code, vaicore_session)
 
@@ -747,8 +797,9 @@ async def get_files(
     client_code: str,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
 
     status_map = {}
     logs = []
@@ -821,8 +872,9 @@ async def get_transcript(
     full_name: str,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -848,8 +900,9 @@ async def get_annotation_status(
     filename: str,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
 
     project_id = await get_project_id_for_file(client_code, filename)
 
@@ -864,8 +917,9 @@ async def export_results(
     internal: bool = False,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
 
     project_id = await get_project_id_for_file(client_code, filename)
 
@@ -1013,8 +1067,9 @@ async def download_file(
     filename: str,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
 
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -1045,8 +1100,9 @@ async def delete_delivery_file(
     filename: str,
     vaicore_session: str = Cookie(None),
     vaicore_admin: str = Cookie(None),
+    access_token: str = Cookie(None),
 ):
-    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin)
+    await verify_client_or_admin(client_code, vaicore_session, vaicore_admin, access_token)
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
     ) as blob_service_client:
@@ -1096,6 +1152,141 @@ async def admin_logout():
     response = JSONResponse(content={"success": True})
     response.delete_cookie("vaicore_admin")
     return response
+
+
+# ===========================================================================
+# RBAC: login, logout, and user management (Phase 2)
+# ===========================================================================
+
+@app.get("/login")
+async def login_page():
+    return FileResponse("static/login.html")
+
+
+@app.post("/api/login")
+async def api_login(
+    email: str = Form(...),
+    password: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
+    user = (
+        await db.execute(select(User).where(User.email == email.lower().strip()))
+    ).scalar_one_or_none()
+    if not user or not user.is_active or not verify_password(password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token(user)
+    resp = JSONResponse({"success": True, "role": user.role, "client_code": user.client_code})
+    resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
+    # Bridge: super_admins also get the legacy admin cookie so existing /api/admin/* stays super_admin-only.
+    if user.role == UserRole.SUPER_ADMIN.value:
+        resp.set_cookie("vaicore_admin", _admin_token(), httponly=True, samesite="lax", max_age=86400 * 7)
+    return resp
+
+
+@app.post("/api/logout")
+async def api_logout():
+    resp = JSONResponse({"success": True})
+    resp.delete_cookie(COOKIE_NAME)
+    resp.delete_cookie("vaicore_admin")
+    return resp
+
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
+    role: str
+    client_code: str | None = None
+
+
+def _user_out(u: User) -> dict:
+    return {
+        "id": str(u.id),
+        "email": u.email,
+        "role": u.role,
+        "client_code": u.client_code,
+        "is_active": u.is_active,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+    }
+
+
+@app.get("/api/users")
+async def list_users(
+    actor: User = Depends(require_client_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(User).order_by(User.created_at.desc())
+    if actor.role == UserRole.CLIENT_ADMIN.value:
+        q = q.where(User.client_code == actor.client_code)
+    rows = (await db.execute(q)).scalars().all()
+    return [_user_out(u) for u in rows]
+
+
+@app.post("/api/users")
+async def create_user(
+    payload: UserCreate,
+    actor: User = Depends(require_client_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    email = payload.email.lower().strip()
+    role = payload.role
+    client_code = (payload.client_code or "").strip() or None
+
+    if not email or not payload.password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+
+    # Authorization rules by actor role
+    if actor.role == UserRole.CLIENT_ADMIN.value:
+        if role != UserRole.BUSINESS_USER.value:
+            raise HTTPException(status_code=403, detail="Client admins can only create business users")
+        client_code = actor.client_code  # forced to their own workspace
+    else:  # super_admin
+        if role not in (UserRole.CLIENT_ADMIN.value, UserRole.BUSINESS_USER.value):
+            raise HTTPException(status_code=400, detail="Role must be client_admin or business_user")
+
+    if not client_code:
+        raise HTTPException(status_code=400, detail="client_code is required for this role")
+
+    if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="A user with this email already exists")
+
+    user = User(
+        email=email,
+        hashed_password=hash_password(payload.password),
+        role=role,
+        client_code=client_code,
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return {"success": True, "id": str(user.id)}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    actor: User = Depends(require_client_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    if uid == actor.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    target = await db.get(User, uid)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if actor.role == UserRole.CLIENT_ADMIN.value:
+        if target.role != UserRole.BUSINESS_USER.value or target.client_code != actor.client_code:
+            raise HTTPException(status_code=403, detail="You can only delete business users in your workspace")
+
+    await db.delete(target)
+    await db.commit()
+    return {"success": True}
 
 
 @app.get("/api/admin/pipeline")
