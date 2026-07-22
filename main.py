@@ -481,7 +481,7 @@ async def client_download_file(download_token: str):
 
 
 @app.post("/api/admin/clients/{token}/generate-upload-link")
-async def generate_upload_link(token: str, actor: User = Depends(require_super_admin)):
+async def generate_upload_link(token: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     """Generate or regenerate a client's upload token."""
     clients = await load_clients()
     if token not in clients:
@@ -497,8 +497,7 @@ async def generate_download_link(
     token: str,
     blob_path: str = Form(...),
     label: str = Form(""),
-    actor: User = Depends(require_super_admin)
-):
+    actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     """Generate a one-time download link for a specific delivered file."""
     clients = await load_clients()
     if token not in clients:
@@ -931,8 +930,7 @@ async def export_results(
     internal: bool = False,
     vaicore_session: str = Cookie(None),
     actor: User = Depends(require_super_admin),
-    access_token: str = Cookie(None),
-):
+    access_token: str = Cookie(None), _csrf: None = Depends(require_csrf)):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
 
     project_id = await get_project_id_for_file(client_code, filename)
@@ -972,8 +970,7 @@ async def export_results(
 @app.post("/api/admin/package-delivery")
 async def package_delivery(
     request: Request,
-    actor: User = Depends(require_super_admin),
-):
+    actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     """PM selects completed files → builds one ZIP from their LS exports → uploads to client-delivery → returns blob_path."""
     body = await request.json()
     client_code: str = body.get("client_code", "")
@@ -1049,8 +1046,7 @@ async def export_results_force(
     client_code: str,
     filename: str,
     internal: bool = False,
-    actor: User = Depends(require_super_admin),
-):
+    actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     """Force delivery despite duplicate collateral warnings (admin override)."""
 
     project_id = await get_project_id_for_file(client_code, filename)
@@ -1112,8 +1108,7 @@ async def delete_delivery_file(
     filename: str,
     vaicore_session: str = Cookie(None),
     actor: User = Depends(require_super_admin),
-    access_token: str = Cookie(None),
-):
+    access_token: str = Cookie(None), _csrf: None = Depends(require_csrf)):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
     async with BlobServiceClient.from_connection_string(
         AZURE_STORAGE_CONNECTION_STRING
@@ -1202,11 +1197,11 @@ async def api_login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = create_access_token(user)
+    csrf = secrets.token_urlsafe(32)
     resp = JSONResponse({"success": True, "role": user.role, "client_code": user.client_code})
     resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
-    # Bridge: super_admins also get the legacy admin cookie so existing /api/admin/* stays super_admin-only.
-    if user.role == UserRole.SUPER_ADMIN.value:
-            return resp
+    resp.set_cookie("csrf_token", csrf, httponly=False, samesite="lax", max_age=86400 * 7)
+    return resp
 
 
 @app.post("/api/logout")
@@ -1251,8 +1246,7 @@ async def list_users(
 async def create_user(
     payload: UserCreate,
     actor: User = Depends(require_client_admin),
-    db: AsyncSession = Depends(get_db),
-):
+    db: AsyncSession = Depends(get_db), _csrf: None = Depends(require_csrf)):
     email = payload.email.lower().strip()
     role = payload.role
     client_code = (payload.client_code or "").strip() or None
@@ -1292,8 +1286,7 @@ async def create_user(
 async def delete_user(
     user_id: str,
     actor: User = Depends(require_client_admin),
-    db: AsyncSession = Depends(get_db),
-):
+    db: AsyncSession = Depends(get_db), _csrf: None = Depends(require_csrf)):
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
@@ -1398,7 +1391,7 @@ async def admin_get_pipeline(actor: User = Depends(require_super_admin)):
 
 
 @app.delete("/api/admin/jobs/{client_code}/{filename}")
-async def admin_delete_job(client_code: str, filename: str, actor: User = Depends(require_super_admin)):
+async def admin_delete_job(client_code: str, filename: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     """Deletes an old or failed job from the upload log and Azure to prevent ghost syncing."""
     try:
         # 1. Delete from local database
@@ -1447,8 +1440,7 @@ async def admin_list_clients(actor: User = Depends(require_super_admin)):
 async def admin_add_client(
     client_name: str = Form(...),
     contact_email: str = Form(""),
-    actor: User = Depends(require_super_admin),
-):
+    actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     clients = await load_clients()
     token = secrets.token_urlsafe(16)
     client_code = _next_client_code(clients)
@@ -1481,8 +1473,7 @@ async def admin_update_client(
     contact_email: str = Form(None),
     project_ids_json: str = Form(None),
     role_labels_json: str = Form(None),
-    actor: User = Depends(require_super_admin),
-):
+    actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1515,7 +1506,7 @@ async def admin_update_client(
 
 
 @app.patch("/api/admin/clients/{token}/toggle")
-async def admin_toggle_client(token: str, actor: User = Depends(require_super_admin)):
+async def admin_toggle_client(token: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1525,7 +1516,7 @@ async def admin_toggle_client(token: str, actor: User = Depends(require_super_ad
 
 
 @app.post("/api/admin/clients/{token}/rotate")
-async def admin_rotate_token(token: str, actor: User = Depends(require_super_admin)):
+async def admin_rotate_token(token: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -1536,7 +1527,7 @@ async def admin_rotate_token(token: str, actor: User = Depends(require_super_adm
 
 
 @app.delete("/api/admin/clients/{token}")
-async def admin_delete_client(token: str, actor: User = Depends(require_super_admin)):
+async def admin_delete_client(token: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     clients = await load_clients()
     if token not in clients:
         raise HTTPException(status_code=404, detail="Client not found")
@@ -2363,7 +2354,7 @@ async def run_zip_batch_pipeline(
 
 
 @app.post("/api/admin/batches/{batch_id}/deliver")
-async def admin_deliver_batch(batch_id: str, actor: User = Depends(require_super_admin)):
+async def admin_deliver_batch(batch_id: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     try:
         # 1. Fetch child items from logs
         logs = await load_upload_log()
@@ -2448,7 +2439,7 @@ async def admin_deliver_batch(batch_id: str, actor: User = Depends(require_super
 
 
 @app.delete("/api/admin/batches/{batch_id}")
-async def admin_delete_batch(batch_id: str, actor: User = Depends(require_super_admin)):
+async def admin_delete_batch(batch_id: str, actor: User = Depends(require_super_admin), _csrf: None = Depends(require_csrf)):
     try:
         logs = await load_upload_log()
         
