@@ -46,3 +46,6 @@ collateral_signatures.json
 *.srt
 transcribe_backend/uploads/
 clients.json
+
+# Security scanning reports
+*_report.json
