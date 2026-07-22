@@ -4,6 +4,10 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTa
 from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from azure.storage.blob import generate_blob_sas, BlobSasPermissions
 from azure.storage.blob.aio import BlobServiceClient
 import os
@@ -144,6 +148,22 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 app = FastAPI(lifespan=lifespan)
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1133,9 +1153,18 @@ async def admin_page():
 
 
 @app.post("/admin/login")
-async def admin_login(password: str = Form(...)):
+@limiter.limit("5/minute")
+async def admin_login(
+    request: Request,
+    password: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+):
     if not ADMIN_PASSWORD or password != ADMIN_PASSWORD:
         return JSONResponse(status_code=401, content={"success": False, "message": "Invalid password"})
+    
+    email = os.getenv("SUPER_ADMIN_EMAIL", "admin@vaidik.ai").lower().strip()
+    user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+
     response = JSONResponse(content={"success": True})
     response.set_cookie(
         key="vaicore_admin",
@@ -1144,6 +1173,9 @@ async def admin_login(password: str = Form(...)):
         samesite="lax",
         max_age=86400 * 7,
     )
+    if user:
+        token = create_access_token(user)
+        response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
     return response
 
 
@@ -1164,7 +1196,9 @@ async def login_page():
 
 
 @app.post("/api/login")
+@limiter.limit("5/minute")
 async def api_login(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),

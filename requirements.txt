@@ -30,3 +30,4 @@ bcrypt
 PyJWT
 apscheduler
 silero-vad
+slowapi==0.1.9

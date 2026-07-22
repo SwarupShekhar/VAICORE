@@ -36,6 +36,7 @@ services:
       - CSRF_TRUSTED_ORIGINS=https://annotate.vaidik.ai,http://annotate.vaidik.ai
       - LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
       - DISABLE_SIGNUP_WITHOUT_LINK=true
+      - LABEL_STUDIO_DISABLE_SIGNUP=true
     restart: always
     networks:
       - vaidikai-network

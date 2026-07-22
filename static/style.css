@@ -1,42 +1,62 @@
-/* Vaicore Styles */
+/* Vaicore Styles - Premium Design System */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700&display=swap');
+
 :root {
-    --bg-color: #0B0B0D;
-    --accent-color: #C5E84D;
-    --white: #FFFFFF;
-    --grey: #8A8A9A;
-    --card-bg: rgba(255, 255, 255, 0.05);
-    --error: #ff6b6b;
-    --success: #51cf66;
+    --bg-color: #050507;
+    --accent-color: #c5e84d;
+    --accent-hover: #d2f260;
+    --white: #ffffff;
+    --grey: #8a8a9a;
+    --card-bg: rgba(255, 255, 255, 0.03);
+    --card-border: rgba(255, 255, 255, 0.08);
+    --error: #ff4d4d;
+    --success: #38c958;
 }
 
 body {
-    font-family: Calibri, sans-serif;
+    font-family: 'Inter', sans-serif;
     background-color: var(--bg-color);
+    background-image: 
+        radial-gradient(circle at 15% 50%, rgba(197, 232, 77, 0.03), transparent 25%),
+        radial-gradient(circle at 85% 30%, rgba(197, 232, 77, 0.04), transparent 25%);
     color: var(--white);
     margin: 0;
     padding: 0;
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
 }
 
 .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 30px 20px;
 }
 
 .card {
     background-color: var(--card-bg);
-    border-radius: 8px;
-    padding: 30px;
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 16px;
+    padding: 32px;
     margin-bottom: 30px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+    transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease;
+}
+
+.card:hover {
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.3);
 }
 
 .logo {
     color: var(--accent-color);
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
     font-size: 3rem;
     text-align: center;
-    margin-bottom: 10px;
+    margin-bottom: 12px;
+    text-shadow: 0 0 30px rgba(197, 232, 77, 0.2);
+    letter-spacing: -1px;
 }
 
 .tagline {
@@ -54,32 +74,49 @@ body {
 }
 
 header {
-    background-color: var(--card-bg);
-    padding: 20px;
+    background-color: rgba(10, 10, 12, 0.7);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--card-border);
+    padding: 20px 40px;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    position: sticky;
+    top: 0;
+    z-index: 100;
 }
 
 header h1 {
     color: var(--accent-color);
+    font-family: 'Outfit', sans-serif;
     margin: 0;
+    font-size: 1.5rem;
+    letter-spacing: -0.5px;
 }
 
 .btn {
-    background-color: var(--accent-color);
-    color: var(--bg-color);
+    background: linear-gradient(135deg, var(--accent-color) 0%, #b8e03e 100%);
+    color: #050507;
     border: none;
-    padding: 12px 24px;
-    border-radius: 4px;
+    padding: 12px 28px;
+    border-radius: 8px;
     cursor: pointer;
-    font-size: 1rem;
-    font-weight: bold;
-    transition: background-color 0.3s;
+    font-size: 0.95rem;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 15px rgba(197, 232, 77, 0.2);
 }
 
 .btn:hover {
-    background-color: #b8e03e;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(197, 232, 77, 0.3);
+    background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent-color) 100%);
+}
+
+.btn:active {
+    transform: translateY(1px);
 }
 
 .btn-secondary {
