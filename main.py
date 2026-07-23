@@ -140,6 +140,13 @@ async def _seed_super_admin():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import subprocess
+    log.info("Running database migrations...")
+    try:
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+    except Exception as e:
+        log.error(f"Failed to run alembic migrations: {e}")
+        
     await _seed_super_admin()
     scheduler = AsyncIOScheduler()
     # Run the purge job every day at 2:00 AM
