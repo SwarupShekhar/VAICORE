@@ -1166,6 +1166,24 @@ def _timecode_to_seconds(tc: str) -> float:
         return 0.0
 
 
+def is_rejected(result_items: List[Dict[str, Any]]) -> Optional[str]:
+    """Classify a single annotation's result items as rejected or not.
+
+    Pure decision helper (no I/O) so the reject-routing logic can be unit
+    tested without hitting Label Studio or Azure. Scans for the "reject"
+    Choices control and returns its selected reason (e.g. "Drop -
+    unintelligible") if present, else None.
+
+    Used by export_vad to route dropped VAD segments out of the delivery JSON.
+    """
+    for r_item in result_items or []:
+        if r_item.get("from_name", "") == "reject":
+            ch = r_item.get("value", {}).get("choices", [])
+            if ch:
+                return ch[0]
+    return None
+
+
 def export_vad(
     client_code: str,
     original_filename: str,
@@ -1235,6 +1253,7 @@ def export_vad(
 
         # ── 2. Extract accepted annotations ────────────────────────────────────
         segments: List[Dict[str, Any]] = []
+        rejected_segments: List[Dict[str, Any]] = []
 
         for task in matched_tasks:
             task_data = task.get("data", {})
@@ -1252,6 +1271,7 @@ def export_vad(
 
                 speaker    = None
                 transcript = None
+                reject     = is_rejected(item.get("result", []))
 
                 for r_item in item.get("result", []):
                     fn  = r_item.get("from_name", "")
@@ -1264,6 +1284,18 @@ def export_vad(
                         texts = val.get("text", [])
                         if texts:
                             transcript = texts[0].strip()
+
+                # Route rejected/dropped segments out of the delivery JSON into a
+                # separate review bucket. A reject wins over transcript text: it
+                # drops the segment even when a transcript was entered.
+                if reject:
+                    rejected_segments.append({
+                        "segment_id": task_data.get("segment_id", 0),
+                        "audio_clip": task_data.get("audio_clip", ""),
+                        "reason": reject,
+                        "source_file": original_filename,
+                    })
+                    continue
 
                 if not transcript:
                     continue
@@ -1291,7 +1323,7 @@ def export_vad(
                     "source_file":      original_filename,
                 })
 
-        if not segments:
+        if not segments and not rejected_segments:
             return {
                 "status": "error",
                 "message": (
@@ -1363,7 +1395,7 @@ def export_vad(
 
         # No customer segments survived the speaker filter — do not package or
         # upload an empty delivery; surface it as an error instead of a false success.
-        if not flat_segments:
+        if not flat_segments and not rejected_segments:
             return {
                 "status": "error",
                 "message": (
@@ -1406,6 +1438,41 @@ def export_vad(
             json_path = tmp_path / "transcript.json"
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(flat_segments, f, ensure_ascii=False, indent=2)
+
+            # Rejected/dropped segments are excluded from the delivery JSON and
+            # instead placed in a separate rejected/ folder for client review.
+            # Clips are fetched with the SAME container ("processing") and blob
+            # path pattern used for the delivery clips above.
+            if rejected_segments:
+                import csv
+                rejected_dir = tmp_path / "rejected"
+                rejected_dir.mkdir(parents=True, exist_ok=True)
+                csv_rows = []
+                for rseg in rejected_segments:
+                    rseg_id = rseg.get("segment_id", 0)
+                    rclip_name = rseg.get("audio_clip", "")
+                    if not rclip_name:
+                        rclip_name = f"{file_id}_segment_{rseg_id}.wav"
+                    rblob_name = f"{client_code}/vad_clips/{file_id}/{rclip_name}"
+                    try:
+                        rblob_client = processing_container.get_blob_client(rblob_name)
+                        with open(rejected_dir / rclip_name, "wb") as f:
+                            f.write(rblob_client.download_blob().readall())
+                    except Exception as e:
+                        print(f"Warning: Failed to download rejected clip {rblob_name}: {e}")
+                    csv_rows.append({
+                        "segment_id": rseg_id,
+                        "reason": rseg.get("reason", ""),
+                        "clip_filename": rclip_name,
+                        "source_file": rseg.get("source_file", original_filename),
+                    })
+                with open(rejected_dir / "rejected.csv", "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(
+                        f, fieldnames=["segment_id", "reason", "clip_filename", "source_file"]
+                    )
+                    writer.writeheader()
+                    for row in csv_rows:
+                        writer.writerow(row)
 
             # Zip everything: language-code_date.zip -> hi_YYYYMMDD_file_id.zip
             zip_stem = f"hi_{datetime.now().strftime('%Y%m%d')}_{file_id}"

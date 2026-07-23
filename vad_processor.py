@@ -84,11 +84,18 @@ VAD_LS_XML = """<View>
   <TextArea
     name="transcript"
     toName="audio"
-    placeholder="Verbatim transcript in Devanagari. Use &lt;UNKNOWN&gt; for unintelligible speech."
+    placeholder="Verbatim Devanagari. Leave blank &amp; mark Drop segment if any word is unclear."
     maxSubmissions="1"
     editable="true"
     rows="5"
     required="true"/>
+
+  <Header value="Reject" size="5"/>
+  <Choices name="reject" toName="audio" showInLine="true">
+    <Choice value="Drop - unintelligible"/>
+    <Choice value="Drop - overlapping speech"/>
+    <Choice value="Drop - noise only"/>
+  </Choices>
 
   <Text name="language_tag" value="$language"/>
 </View>"""
@@ -326,7 +333,7 @@ def postprocess(text: str, avg_logprob: float, threshold: float) -> str:
     High-confidence → corrections → strip repetition loops → strip punctuation
     → digits → abbrevs.
     """
-    if avg_logprob < threshold:
+    if avg_logprob < threshold and os.getenv("VAD_EMIT_UNKNOWN", "0") == "1":
         return "<UNKNOWN>"
     text = apply_corrections(text.strip())
     text = strip_repetition_loop(text)
