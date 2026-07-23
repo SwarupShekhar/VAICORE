@@ -816,7 +816,6 @@ async def _run_upload_pipeline(file: UploadFile, client_code: str, language: str
 async def get_files(
     client_code: str,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
@@ -891,7 +890,6 @@ async def get_transcript(
     client_code: str,
     full_name: str,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
@@ -919,7 +917,6 @@ async def get_annotation_status(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
@@ -936,7 +933,6 @@ async def export_results(
     filename: str,
     internal: bool = False,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None), _csrf: None = Depends(require_csrf)):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
 
@@ -1081,7 +1077,6 @@ async def download_file(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None),
 ):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
@@ -1114,7 +1109,6 @@ async def delete_delivery_file(
     client_code: str,
     filename: str,
     vaicore_session: str = Cookie(None),
-    actor: User = Depends(require_super_admin),
     access_token: str = Cookie(None), _csrf: None = Depends(require_csrf)):
     await verify_client_or_admin(client_code, vaicore_session, access_token)
     async with BlobServiceClient.from_connection_string(

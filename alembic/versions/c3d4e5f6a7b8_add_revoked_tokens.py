@@ -15,6 +15,11 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Idempotent: the table may already exist from a manual hotfix on the
+    # server (it was missing because no migration originally created it).
+    bind = op.get_bind()
+    if sa.inspect(bind).has_table("revoked_tokens"):
+        return
     op.create_table(
         "revoked_tokens",
         sa.Column("jti", sa.String(), primary_key=True, nullable=False),
