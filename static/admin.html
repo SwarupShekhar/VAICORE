@@ -319,71 +319,78 @@
 
     <!-- Tab Bar -->
     <div class="tab-bar">
-        <button class="tab-btn active" id="tabbtn-clients" onclick="switchTab('clients')">Clients</button>
+        <button class="tab-btn active" id="tabbtn-clients" onclick="switchTab('clients')">Projects</button>
         <button class="tab-btn" id="tabbtn-users" onclick="switchTab('users')">User Management</button>
     </div>
 
     <div class="container" id="tab-clients" style="padding-top: 28px;">
 
-        <!-- Stats -->
-        <div class="stats-row" id="stats-row">
-            <div class="stat-card"><div class="num" id="stat-total">—</div><div class="label">Total Clients</div></div>
-            <div class="stat-card"><div class="num" id="stat-active">—</div><div class="label">Active</div></div>
-            <div class="stat-card"><div class="num" id="stat-inactive">—</div><div class="label">Inactive</div></div>
-        </div>
-
-        <!-- Add Client -->
-        <div class="card">
-            <h2 style="margin-top:0">Add New Client</h2>
-            <div class="add-form">
-                <div class="field">
-                    <label>Client Name *</label>
-                    <input type="text" id="new-name" placeholder="e.g. HDFC Bank">
-                </div>
-                <div class="field">
-                    <label>Contact Email</label>
-                    <input type="email" id="new-email" placeholder="client@company.com">
-                </div>
-                <button class="btn" style="height:42px" onclick="addClient()">+ Add Client</button>
+        <div id="projects-list-container">
+            <!-- Stats -->
+            <div class="stats-row" id="stats-row">
+                <div class="stat-card"><div class="num" id="stat-total">—</div><div class="label">Total Projects</div></div>
+                <div class="stat-card"><div class="num" id="stat-active">—</div><div class="label">Active</div></div>
+                <div class="stat-card"><div class="num" id="stat-inactive">—</div><div class="label">Inactive</div></div>
             </div>
-            <div id="add-error" style="color:#ff6b6b;font-size:0.85rem;min-height:18px;margin-top:4px;"></div>
-        </div>
 
-        <!-- Pipeline Stats -->
-        <div class="stats-row" style="margin-bottom: 24px;">
-            <div class="stat-card" style="background: rgba(197,232,77,0.05); border: 1px solid rgba(197,232,77,0.15);"><div class="num" id="pipe-total">0</div><div class="label">Total Jobs</div></div>
-            <div class="stat-card" style="background: rgba(81,207,102,0.05); border: 1px solid rgba(81,207,102,0.15);"><div class="num" id="pipe-review">0</div><div class="label">In Review</div></div>
-            <div class="stat-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);"><div class="num" id="pipe-delivered">0</div><div class="label">Delivered</div></div>
-            <div class="stat-card" style="background: rgba(255,107,107,0.05); border: 1px solid rgba(255,107,107,0.15);"><div class="num" id="pipe-failed">0</div><div class="label">Failed</div></div>
-        </div>
+            <!-- Add Client -->
+            <div class="card">
+                <h2 style="margin-top:0">Add New Project</h2>
+                <div class="add-form">
+                    <div class="field">
+                        <label>Project Name *</label>
+                        <input type="text" id="new-name" placeholder="e.g. HDFC Bank">
+                    </div>
+                    <div class="field">
+                        <label>Contact Email</label>
+                        <input type="email" id="new-email" placeholder="client@company.com">
+                    </div>
+                    <button class="btn" style="height:42px" onclick="addClient()">+ Add Project</button>
+                </div>
+                <div id="add-error" style="color:#ff6b6b;font-size:0.85rem;min-height:18px;margin-top:4px;"></div>
+            </div>
 
-        <!-- Project Pipeline -->
-        <div class="card">
-            <h2 style="margin-top:0">Operations Center — Project Delivery Pipeline</h2>
-            <div id="pipeline-accordion-container">
-                <div class="empty-state" id="pipeline-loading-msg">Loading pipeline data…</div>
+            <!-- Client Table -->
+            <div class="card">
+                <h2 style="margin-top:0">All Projects</h2>
+                <table class="client-table">
+                    <thead>
+                        <tr>
+                            <th>Project</th>
+                            <th>Code</th>
+                            <th>Email</th>
+                            <th>Created</th>
+                            <th>Status</th>
+                            <th>Token</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="clients-tbody">
+                        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
-        <!-- Client Table -->
-        <div class="card">
-            <h2 style="margin-top:0">All Clients</h2>
-            <table class="client-table">
-                <thead>
-                    <tr>
-                        <th>Client</th>
-                        <th>Code</th>
-                        <th>Email</th>
-                        <th>Created</th>
-                        <th>Status</th>
-                        <th>Token</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="clients-tbody">
-                    <tr><td colspan="7" class="empty-state">Loading...</td></tr>
-                </tbody>
-            </table>
+        <!-- Pipeline View -->
+        <div id="pipeline-view-container" style="display: none;">
+            <button class="btn" style="margin-bottom: 20px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: white;" onclick="backToProjects()">🔙 Back to Projects</button>
+            
+            <!-- Pipeline Stats -->
+            <div class="stats-row" style="margin-bottom: 24px;">
+                <div class="stat-card" style="background: rgba(197,232,77,0.05); border: 1px solid rgba(197,232,77,0.15);"><div class="num" id="pipe-total">0</div><div class="label">Total Jobs</div></div>
+                <div class="stat-card" style="background: rgba(81,207,102,0.05); border: 1px solid rgba(81,207,102,0.15);"><div class="num" id="pipe-review">0</div><div class="label">In Review</div></div>
+                <div class="stat-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);"><div class="num" id="pipe-delivered">0</div><div class="label">Delivered</div></div>
+                <div class="stat-card" style="background: rgba(255,107,107,0.05); border: 1px solid rgba(255,107,107,0.15);"><div class="num" id="pipe-failed">0</div><div class="label">Failed</div></div>
+            </div>
+
+            <!-- Project Pipeline -->
+            <div class="card">
+                <h2 style="margin-top:0" id="pipeline-project-title">Operations Center — Project Delivery Pipeline</h2>
+                <div id="pipeline-accordion-container">
+                    <div class="empty-state" id="pipeline-loading-msg">Loading pipeline data…</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -537,8 +544,31 @@
         loadPipeline();
     }
 
+    // ── Flow Controllers ──────────────────────────────
+    window._currentPipelineClientCode = null;
+
+    function viewPipeline(clientCode) {
+        window._currentPipelineClientCode = clientCode;
+        document.getElementById('projects-list-container').style.display = 'none';
+        document.getElementById('pipeline-view-container').style.display = 'block';
+        document.getElementById('pipeline-project-title').textContent = `Pipeline: ${clientCode}`;
+        
+        loadPipeline(); // Force a refresh right away
+    }
+
+    function backToProjects() {
+        window._currentPipelineClientCode = null;
+        document.getElementById('projects-list-container').style.display = 'block';
+        document.getElementById('pipeline-view-container').style.display = 'none';
+    }
+
     // ── Load Pipeline ──────────────────────────────
     async function loadPipeline() {
+        if (!window._currentPipelineClientCode) {
+            // No pipeline is visible, don't poll
+            return;
+        }
+
         const container = document.getElementById('pipeline-accordion-container');
         try {
             const res = await fetch('/api/admin/pipeline');
@@ -547,7 +577,13 @@
                 container.innerHTML = `<div class="empty-state" style="color:#ff6b6b;">⚠️ Failed to load pipeline (${res.status}): ${detail}</div>`;
                 return;
             }
-            const pipeline = await res.json();
+            let pipeline = await res.json();
+            
+            // Filter to ONLY the selected project
+            if (window._currentPipelineClientCode) {
+                pipeline = pipeline.filter(i => i.client_code === window._currentPipelineClientCode);
+            }
+
             // Skip full DOM rebuild if data unchanged (prevents visual flicker on poll)
             const fp = JSON.stringify(pipeline.map(i => `${i.filename}|${i.status}|${i.client_code}`));
             if (fp === window._pipelineFingerprint && document.getElementById('pipeline-accordion-container').children.length > 0) {
@@ -1203,6 +1239,7 @@
                     <button class="btn-icon" style="background:rgba(138,43,226,0.15);color:#a25df2;" title="Copy Project Manager access link" onclick="copyLink('${esc(c.token)}')">💼 PM Link</button>
                     <button class="btn-icon" style="background:rgba(255,140,0,0.15);color:#ff8c00;" title="Configure project IDs and speaker labels" onclick="openConfigModal('${esc(c.token)}')">⚙️ Configure</button>
                     <button class="btn-icon" style="background:rgba(81,207,102,0.12);color:#51cf66;" title="Generate a download link for a delivered file" onclick="openDownloadLinkModal('${esc(c.token)}', '${esc(c.client_code)}', '${esc(c.client_name)}')">📥 Download Link</button>
+                    <button class="btn-icon" style="background:rgba(197,232,77,0.15);color:#c5e84d;" title="View project pipeline" onclick="viewPipeline('${esc(c.client_code)}')">🔍 Pipeline</button>
                     <button class="btn-icon ${toggleClass}" onclick="toggleClient('${esc(c.token)}')">${toggleLabel}</button>
                     <button class="btn-icon btn-rotate" onclick="rotateToken('${esc(c.token)}', '${esc(c.client_name)}')">Rotate</button>
                     <button class="btn-icon btn-delete" onclick="deleteClient('${esc(c.token)}', '${esc(c.client_name)}')">Delete</button>
