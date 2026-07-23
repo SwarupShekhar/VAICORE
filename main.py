@@ -115,16 +115,16 @@ from auto_purge import run_purge
 load_dotenv()
 
 async def _seed_super_admin():
-    """Create a default super_admin from ADMIN_PASSWORD if no users exist (avoids lockout)."""
+    """Create a default super_admin from ADMIN_PASSWORD if it doesn't exist (avoids lockout)."""
     try:
+        email = os.getenv("SUPER_ADMIN_EMAIL", "admin@vaidik.ai").lower().strip()
         async with get_db_session() as db:
-            if (await db.execute(select(User).limit(1))).scalar_one_or_none() is not None:
+            if (await db.execute(select(User).where(User.email == email))).scalar_one_or_none() is not None:
                 return
             pw = os.getenv("ADMIN_PASSWORD", "")
             if not pw:
                 log.warning("ADMIN_PASSWORD not set — skipping super_admin seed.")
                 return
-            email = os.getenv("SUPER_ADMIN_EMAIL", "admin@vaidik.ai").lower().strip()
             db.add(User(
                 email=email,
                 hashed_password=hash_password(pw),
@@ -1153,11 +1153,17 @@ async def admin_login(
     password: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
-    if not ADMIN_PASSWORD or password != ADMIN_PASSWORD:
-        return JSONResponse(status_code=401, content={"success": False, "message": "Invalid password"})
-    
     email = os.getenv("SUPER_ADMIN_EMAIL", "admin@vaidik.ai").lower().strip()
     user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+
+    is_valid = False
+    if ADMIN_PASSWORD and password == ADMIN_PASSWORD:
+        is_valid = True
+    elif user and user.is_active and verify_password(password, user.hashed_password):
+        is_valid = True
+
+    if not is_valid:
+        return JSONResponse(status_code=401, content={"success": False, "message": "Invalid password"})
 
     response = JSONResponse(content={"success": True})
     response.set_cookie(
@@ -1170,6 +1176,8 @@ async def admin_login(
     if user:
         token = create_access_token(user)
         response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=86400 * 7)
+        csrf = secrets.token_urlsafe(32)
+        response.set_cookie("csrf_token", csrf, httponly=False, samesite="lax", max_age=86400 * 7)
     return response
 
 
